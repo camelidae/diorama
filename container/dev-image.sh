@@ -61,6 +61,9 @@ fi
 mkdir -p "$root/dist"
 cp "$root/target/$target/debug/diorama" "$root/dist/diorama"
 cp "$root/target/$target/debug/dioramactl" "$root/dist/dioramactl"
+if command -v "${target}-strip" >/dev/null 2>&1; then
+    "${target}-strip" "$root/dist/diorama" "$root/dist/dioramactl"
+fi
 chmod +x "$root/dist/diorama" "$root/dist/dioramactl"
 
 case "$engine" in

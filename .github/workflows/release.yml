@@ -53,14 +53,14 @@ jobs:
         run: rustup target add ${{ matrix.target }}
       - name: Build ship binaries
         run: cargo build --locked --profile dist -p diorama -p dioramactl --target ${{ matrix.target }}
-      - name: Build static add-on installer
+      - name: Build static musl binaries and add-on installer
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools
           rustup target add ${{ matrix.addon_target }}
           CC=musl-gcc CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
             CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-            cargo build --locked --profile dist -p diorama-addon --target ${{ matrix.addon_target }}
+            cargo build --locked --profile dist -p diorama -p dioramactl -p diorama-addon --target ${{ matrix.addon_target }}
       - name: Prepare pinned offline runtime and image assets
         run: |
           assets_dir="$RUNNER_TEMP/release-assets"
@@ -123,6 +123,30 @@ jobs:
             bash container/verify-offline.sh "ghcr.io/geoffsee/diorama:$RELEASE_VERSION" \
               "$PWD/dist" "$RELEASE_VERSION" "$BUNDLE_ARCH" "$BINARY_DIR/dioramactl" "$kubectl" "$mode"
           done
+      - name: Build and verify the slim GHCR container image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          ghcr_ctx="$RUNNER_TEMP/ghcr-context"
+          mkdir -p "$ghcr_ctx/dist" "$ghcr_ctx/container" ghcr-image
+          install -m 0755 "target/${{ matrix.addon_target }}/dist/diorama" "$ghcr_ctx/dist/diorama"
+          install -m 0755 "target/${{ matrix.addon_target }}/dist/dioramactl" "$ghcr_ctx/dist/dioramactl"
+          install -m 0755 container/entrypoint.sh "$ghcr_ctx/container/entrypoint.sh"
+          cp container/Dockerfile "$ghcr_ctx/container/Dockerfile"
+          local_ghcr="localhost:5000/diorama-ghcr:$RELEASE_VERSION"
+          docker build --platform "linux/$BUNDLE_ARCH" \
+            --file "$ghcr_ctx/container/Dockerfile" --tag "$local_ghcr" "$ghcr_ctx"
+          docker run --rm --network=none --tmpfs /offline --entrypoint /bin/sh \
+            "$local_ghcr" -c '
+              diorama-entrypoint --path=/offline/node --version &&
+              test -x /offline/node/bin/containerd &&
+              test -x /offline/node/bin/crun &&
+              test -x /offline/node/cni/bin/bridge &&
+              command -v dioramactl'
+          docker push "$local_ghcr"
+          "$ASSETS_DIR/tools/crane" mutate --insecure --platform "linux/$BUNDLE_ARCH" \
+            --tag "ghcr.io/${REPOSITORY,,}:$RELEASE_VERSION" \
+            --output "ghcr-image/diorama-$BUNDLE_ARCH.tar" "$local_ghcr"
       - name: Package binaries
         run: |
           mkdir -p dist
@@ -147,6 +171,13 @@ jobs:
           path: dist/*
           if-no-files-found: error
           compression-level: 0
+      - name: Upload slim GHCR container image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ghcr-image-${{ matrix.bundle_arch }}
+          path: ghcr-image/*
+          if-no-files-found: error
+          compression-level: 6
 
   release:
     name: Attach GitHub release
@@ -154,6 +185,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
+      packages: write
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -163,10 +195,45 @@ jobs:
           pattern: dist-*
           merge-multiple: true
           path: release
+      - name: Download slim GHCR container images
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: ghcr-image-*
+          merge-multiple: true
+          path: ghcr-images
       - name: Combine checksums
         run: |
           cat release/SHA256SUMS-* | sort > release/SHA256SUMS
           rm release/SHA256SUMS-*
+      - name: Publish multi-arch container image to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          crane_dir="$RUNNER_TEMP/crane"
+          mkdir -p "$crane_dir"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            https://github.com/google/go-containerregistry/releases/download/v0.21.5/go-containerregistry_Linux_x86_64.tar.gz \
+            --output "$crane_dir/crane.tar.gz"
+          printf '%s  %s\n' 9f823ae5ee25803161110f957b5fd4538f714d40cdf25dacb4914fefafd246bf \
+            "$crane_dir/crane.tar.gz" | sha256sum --check --strict
+          tar -xzf "$crane_dir/crane.tar.gz" -C "$crane_dir" crane
+          crane="$crane_dir/crane"
+          image="ghcr.io/${REPOSITORY,,}"
+          tag="${GITHUB_REF#refs/tags/}"
+          printf '%s\n' "$GH_TOKEN" | "$crane" auth login ghcr.io -u "$ACTOR" --password-stdin
+          for arch in amd64 arm64; do
+            "$crane" push "ghcr-images/diorama-$arch.tar" "$image:$tag-$arch"
+          done
+          "$crane" index append \
+            -m "$image:$tag-amd64" \
+            -m "$image:$tag-arm64" \
+            -t "$image:$tag"
+          case "$tag" in
+            *-*) ;;
+            *) "$crane" tag "$image:$tag" latest ;;
+          esac
       - name: Publish the tag release
         env:
           GH_TOKEN: ${{ github.token }}
