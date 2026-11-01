@@ -47,6 +47,13 @@ RUN printf '%s\n' \
         containerd \
         crun \
         cni-plugins \
+    && rm -f /usr/bin/runc /usr/bin/containerd-stress \
+    && for bin in /usr/libexec/cni/*; do \
+        case "${bin##*/}" in \
+            bridge|host-local|portmap|loopback) ;; \
+            *) rm -f "$bin" ;; \
+        esac; \
+    done \
     && mkdir -p /var/lib/diorama /opt/cni/bin \
     && for plugin in bridge host-local portmap loopback; do \
         ln -sfn "/usr/libexec/cni/$plugin" "/opt/cni/bin/$plugin"; \
