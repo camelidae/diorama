@@ -246,6 +246,7 @@ jobs:
             "$bun_dir/bun.zip" | sha256sum --check --strict
           unzip -q "$bun_dir/bun.zip" -d "$bun_dir"
           export PATH="$bun_dir/bun-linux-x64:$PATH"
+          chmod +x release/* || true
           tag="${GITHUB_REF#refs/tags/}"
           bun run --cwd npm packages/publisher-cli/index.ts build \
             --from-dir "$PWD/release" --version "$tag"

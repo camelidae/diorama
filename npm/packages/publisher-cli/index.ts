@@ -637,6 +637,7 @@ export function stageBinaries(options: StageOptions): void {
           copyFileSync(alreadyCompressed, destPath);
         } else {
           copyFileSync(sourcePath, destPath);
+          chmodSync(destPath, 0o755);
           if (upxBin && rawBytes > 1024 * 1024) {
             const head = readFileSync(destPath);
             if (!head.includes(Buffer.from("UPX!", "utf8"))) {
