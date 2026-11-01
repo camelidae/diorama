@@ -29,15 +29,13 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             arch: x86_64
             bundle_arch: amd64
-            addon_target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
             arch: aarch64
             bundle_arch: arm64
-            addon_target: aarch64-unknown-linux-musl
     env:
       RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && format('v0.0.0-check.{0}', github.run_id) || github.ref_name }}
       BUNDLE_ARCH: ${{ matrix.bundle_arch }}
@@ -49,18 +47,14 @@ jobs:
       - uses: $/.github/actions/setup-rust
         with:
           cache-key: dist-${{ matrix.arch }}
+      - uses: $/.github/actions/setup-oci-cri
       - name: Install the release target
         run: rustup target add ${{ matrix.target }}
-      - name: Build ship binaries
-        run: cargo build --locked --profile dist -p diorama -p dioramactl --target ${{ matrix.target }}
       - name: Build static musl binaries and add-on installer
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
-          rustup target add ${{ matrix.addon_target }}
-          CC=musl-gcc CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-            CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-            cargo build --locked --profile dist -p diorama -p dioramactl -p diorama-addon --target ${{ matrix.addon_target }}
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev xz-utils
+          bash container/build-static-musl.sh "${{ matrix.target }}"
       - name: Prepare pinned offline runtime and image assets
         run: |
           assets_dir="$RUNNER_TEMP/release-assets"
@@ -70,7 +64,7 @@ jobs:
       - name: Build minimal storage and self-installing add-on images
         run: |
           target/debug/diorama-release-bundle build-images "$RELEASE_VERSION" "$BUNDLE_ARCH" \
-            "target/${{ matrix.addon_target }}/dist/diorama-addon" "$ASSETS_DIR" docker localhost:5000
+            "$BINARY_DIR/diorama-addon" "$ASSETS_DIR" docker localhost:5000
       - name: Build and export the offline diorama image
         run: |
           install -m 0755 "$BINARY_DIR/diorama" "$ASSETS_DIR/bin/diorama"
@@ -129,8 +123,8 @@ jobs:
         run: |
           ghcr_ctx="$RUNNER_TEMP/ghcr-context"
           mkdir -p "$ghcr_ctx/dist" "$ghcr_ctx/container" ghcr-image
-          install -m 0755 "target/${{ matrix.addon_target }}/dist/diorama" "$ghcr_ctx/dist/diorama"
-          install -m 0755 "target/${{ matrix.addon_target }}/dist/dioramactl" "$ghcr_ctx/dist/dioramactl"
+          install -m 0755 "$BINARY_DIR/diorama" "$ghcr_ctx/dist/diorama"
+          install -m 0755 "$BINARY_DIR/dioramactl" "$ghcr_ctx/dist/dioramactl"
           install -m 0755 container/entrypoint.sh "$ghcr_ctx/container/entrypoint.sh"
           cp container/Dockerfile "$ghcr_ctx/container/Dockerfile"
           local_ghcr="localhost:5000/diorama-ghcr:$RELEASE_VERSION"
@@ -186,9 +180,13 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Download binaries and offline bundles
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -234,6 +232,25 @@ jobs:
             *-*) ;;
             *) "$crane" tag "$image:$tag" latest ;;
           esac
+      - name: Publish npm packages (@diorama/*)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends upx-ucl unzip
+          sudo npm install -g npm@latest
+          bun_dir="$RUNNER_TEMP/bun"
+          mkdir -p "$bun_dir"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64.zip \
+            --output "$bun_dir/bun.zip"
+          printf '%s  %s\n' bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c \
+            "$bun_dir/bun.zip" | sha256sum --check --strict
+          unzip -q "$bun_dir/bun.zip" -d "$bun_dir"
+          export PATH="$bun_dir/bun-linux-x64:$PATH"
+          tag="${GITHUB_REF#refs/tags/}"
+          bun run --cwd npm packages/publisher-cli/index.ts build \
+            --from-dir "$PWD/release" --version "$tag"
+          bun run --cwd npm packages/publisher-cli/index.ts publish \
+            --version "$tag"
       - name: Publish the tag release
         env:
           GH_TOKEN: ${{ github.token }}
