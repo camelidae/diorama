@@ -420,8 +420,46 @@ function compileRustTarget(
   };
 
   const zigLibDir = resolveZigLibDir();
+  const muslInitSrc = join(REPO_ROOT, "target", "cross-wrappers", "musl_init_args.c");
+  writeFileSync(
+    muslInitSrc,
+    [
+      "#include <stddef.h>",
+      "#include <stdint.h>",
+      "extern void _init(void);",
+      "extern char **__environ;",
+      "extern char *__progname_full;",
+      'extern __attribute__((weak, visibility("hidden"))) void (*const __init_array_start)(void);',
+      'extern __attribute__((weak, visibility("hidden"))) void (*const __init_array_end)(void);',
+      "void __libc_start_init(void) {",
+      "  int argc = 0;",
+      "  char **argv = NULL;",
+      "  char **envp = __environ;",
+      "  if (envp != NULL && envp[-1] == NULL) {",
+      "    char **end = envp - 1;",
+      "    for (char **cur = end - 1; (end - cur) <= 131072; --cur) {",
+      "      size_t candidate = (size_t)(end - cur);",
+      "      if (*(size_t *)(cur - 1) == candidate && (cur[0] == __progname_full || candidate == 1)) {",
+      "        argc = (int)candidate;",
+      "        argv = cur;",
+      "        break;",
+      "      }",
+      "    }",
+      "  }",
+      "  _init();",
+      "  uintptr_t a = (uintptr_t)&__init_array_start;",
+      "  for (; a < (uintptr_t)&__init_array_end; a += sizeof(void (*)(void))) {",
+      "    (*(void (**)(int, char **, char **))a)(argc, argv, envp);",
+      "  }",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
 
   if (rustTarget === "aarch64-unknown-linux-musl") {
+    const initObj = join(REPO_ROOT, "target", "cross-wrappers", "musl_init_args_aarch64.o");
+    runCommand(wrappers.aarch64MuslCc, ["-O2", "-c", muslInitSrc, "-o", initObj], REPO_ROOT, env);
     env.CC_aarch64_unknown_linux_musl = wrappers.aarch64MuslCc;
     env.CXX_aarch64_unknown_linux_musl = wrappers.aarch64MuslCxx;
     env.AR_aarch64_unknown_linux_musl = wrappers.aarch64MuslAr;
@@ -430,7 +468,7 @@ function compileRustTarget(
 
     if (wrappers.aarch64UsesZig) {
       env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS =
-        "-C link-self-contained=no";
+        `-C link-self-contained=no -C link-arg=${initObj}`;
       if (zigLibDir) {
         env.BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl = [
           `-isystem ${zigLibDir}/include`,
@@ -441,6 +479,8 @@ function compileRustTarget(
         ].join(" ");
       }
     } else {
+      env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS =
+        `-C link-arg=${initObj}`;
       const sysrootRes = spawnSync(wrappers.aarch64MuslCc, ["-print-sysroot"], {
         encoding: "utf8",
       });
@@ -471,13 +511,15 @@ function compileRustTarget(
     );
     env.CMAKE_TOOLCHAIN_FILE_aarch64_unknown_linux_musl = toolchainFile;
   } else if (rustTarget === "x86_64-unknown-linux-musl") {
+    const initObj = join(REPO_ROOT, "target", "cross-wrappers", "musl_init_args_x86_64.o");
+    runCommand(wrappers.x86MuslCc, ["-O2", "-c", muslInitSrc, "-o", initObj], REPO_ROOT, env);
     env.CC_x86_64_unknown_linux_musl = wrappers.x86MuslCc;
     env.CXX_x86_64_unknown_linux_musl = wrappers.x86MuslCxx;
     env.AR_x86_64_unknown_linux_musl = wrappers.x86MuslAr;
     env.RANLIB_x86_64_unknown_linux_musl = wrappers.x86MuslRanlib;
     env.CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = wrappers.x86MuslCc;
     env.CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS =
-      "-C link-self-contained=no";
+      `-C link-self-contained=no -C link-arg=${initObj}`;
 
     if (zigLibDir) {
       env.BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_musl = [
