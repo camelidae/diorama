@@ -130,6 +130,41 @@ chmod +x \
     "$wrap_dir/zig-ranlib.sh" \
     "$wrap_dir/go-wrapper.sh"
 
+cat > "$wrap_dir/musl_init_args.c" <<'EOF'
+#include <stddef.h>
+#include <stdint.h>
+
+extern void _init(void);
+extern char **__environ;
+extern char *__progname_full;
+extern __attribute__((weak, visibility("hidden"))) void (*const __init_array_start)(void);
+extern __attribute__((weak, visibility("hidden"))) void (*const __init_array_end)(void);
+
+void __libc_start_init(void) {
+    int argc = 0;
+    char **argv = NULL;
+    char **envp = __environ;
+    if (envp != NULL && envp[-1] == NULL) {
+        char **end = envp - 1;
+        for (char **cur = end - 1; (end - cur) <= 131072; --cur) {
+            size_t candidate = (size_t)(end - cur);
+            if (*(size_t *)(cur - 1) == candidate &&
+                (cur[0] == __progname_full || candidate == 1)) {
+                argc = (int)candidate;
+                argv = cur;
+                break;
+            }
+        }
+    }
+    _init();
+    uintptr_t a = (uintptr_t)&__init_array_start;
+    for (; a < (uintptr_t)&__init_array_end; a += sizeof(void (*)(void))) {
+        (*(void (**)(int, char **, char **))a)(argc, argv, envp);
+    }
+}
+EOF
+"$wrap_dir/zig-cc.sh" -O2 -c "$wrap_dir/musl_init_args.c" -o "$wrap_dir/musl_init_args.o"
+
 cat > "$wrap_dir/toolchain.cmake" <<EOF
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR $arch)
@@ -157,7 +192,7 @@ export "RANLIB_${target_env}=$wrap_dir/zig-ranlib.sh"
 export "CMAKE_TOOLCHAIN_FILE_${target_env}=$wrap_dir/toolchain.cmake"
 export "BINDGEN_EXTRA_CLANG_ARGS_${target_env}=$bindgen_args"
 export "CARGO_TARGET_${target_upper}_LINKER=$wrap_dir/zig-cc.sh"
-export "CARGO_TARGET_${target_upper}_RUSTFLAGS=-C link-self-contained=no"
+export "CARGO_TARGET_${target_upper}_RUSTFLAGS=-C link-self-contained=no -C link-arg=$wrap_dir/musl_init_args.o"
 
 cd "$root"
 exec cargo build --locked --profile dist \
