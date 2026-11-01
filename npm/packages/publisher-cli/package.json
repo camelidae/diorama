@@ -1,0 +1,11 @@
+{
+  "name": "@diorama/publisher-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Build, stage, pack, and publish CLI for @diorama npm packages",
+  "type": "module",
+  "module": "./index.ts",
+  "bin": {
+    "publisher-cli": "./index.ts"
+  }
+}

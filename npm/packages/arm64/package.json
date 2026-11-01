@@ -1,0 +1,40 @@
+{
+  "name": "@diorama/arm64",
+  "version": "0.1.0",
+  "description": "Linux arm64 native binaries for diorama and dioramactl",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/geoffsee/diorama.git",
+    "directory": "npm/packages/arm64"
+  },
+  "homepage": "https://github.com/geoffsee/diorama#readme",
+  "bugs": {
+    "url": "https://github.com/geoffsee/diorama/issues"
+  },
+  "keywords": [
+    "diorama",
+    "dioramactl",
+    "kubernetes",
+    "k8s",
+    "linux",
+    "arm64",
+    "aarch64"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "index.js",
+  "files": [
+    "README.md",
+    "index.js",
+    "bin/diorama",
+    "bin/dioramactl"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
