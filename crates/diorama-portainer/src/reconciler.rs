@@ -191,6 +191,7 @@ impl PortainerReconciler {
         Ok(report)
     }
 
+    #[inline(never)]
     async fn reconcile_namespace(
         &self,
         client: &KubernetesApiClient,
@@ -219,6 +220,7 @@ impl PortainerReconciler {
         Ok(())
     }
 
+    #[inline(never)]
     async fn reconcile_service_account(
         &self,
         client: &KubernetesApiClient,
@@ -265,6 +267,7 @@ impl PortainerReconciler {
         Ok(())
     }
 
+    #[inline(never)]
     async fn reconcile_cluster_role_binding(
         &self,
         client: &KubernetesApiClient,
@@ -311,6 +314,7 @@ impl PortainerReconciler {
         Ok(())
     }
 
+    #[inline(never)]
     async fn reconcile_config_map(
         &self,
         client: &KubernetesApiClient,
@@ -325,37 +329,7 @@ impl PortainerReconciler {
                 debug!("config map {PORTAINER_AGENT_CONFIGMAP_NAME} already exists; preserved");
             },
             Err(ApiserverError::NotFound { .. }) => {
-                let mut data = serde_json::Map::new();
-                data.insert("EDGE_ID".to_string(), json!(self.config.edge_id));
-                data.insert(
-                    "EDGE_INSECURE_POLL".to_string(),
-                    json!(self.config.edge_insecure_poll),
-                );
-                data.insert(
-                    "EDGE_ASYNC".to_string(),
-                    json!(if self.config.edge_async {
-                        "true"
-                    } else {
-                        "false"
-                    }),
-                );
-                if let Some(secret) = &self.config.edge_secret
-                    && !secret.is_empty()
-                {
-                    data.insert("EDGE_SECRET".to_string(), json!(secret));
-                }
-                for (k, v) in &self.config.env_vars {
-                    data.insert(k.clone(), json!(v));
-                }
-                let cm_val = json!({
-                    "apiVersion": "v1",
-                    "kind": "ConfigMap",
-                    "metadata": {
-                        "name": PORTAINER_AGENT_CONFIGMAP_NAME,
-                        "namespace": PORTAINER_NAMESPACE,
-                    },
-                    "data": data,
-                });
+                let cm_val = self.build_config_map_json();
                 match client
                     .create_configmap_object(PORTAINER_NAMESPACE, cm_val)
                     .await
@@ -378,6 +352,42 @@ impl PortainerReconciler {
         Ok(())
     }
 
+    #[inline(never)]
+    fn build_config_map_json(&self) -> Value {
+        let mut data = serde_json::Map::new();
+        data.insert("EDGE_ID".to_string(), json!(self.config.edge_id));
+        data.insert(
+            "EDGE_INSECURE_POLL".to_string(),
+            json!(self.config.edge_insecure_poll),
+        );
+        data.insert(
+            "EDGE_ASYNC".to_string(),
+            json!(if self.config.edge_async {
+                "true"
+            } else {
+                "false"
+            }),
+        );
+        if let Some(secret) = &self.config.edge_secret
+            && !secret.is_empty()
+        {
+            data.insert("EDGE_SECRET".to_string(), json!(secret));
+        }
+        for (k, v) in &self.config.env_vars {
+            data.insert(k.clone(), json!(v));
+        }
+        json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": PORTAINER_AGENT_CONFIGMAP_NAME,
+                "namespace": PORTAINER_NAMESPACE,
+            },
+            "data": data,
+        })
+    }
+
+    #[inline(never)]
     async fn reconcile_secret(
         &self,
         client: &KubernetesApiClient,
@@ -426,6 +436,7 @@ impl PortainerReconciler {
         Ok(())
     }
 
+    #[inline(never)]
     async fn reconcile_service(
         &self,
         client: &KubernetesApiClient,
@@ -488,6 +499,7 @@ impl PortainerReconciler {
         Ok(())
     }
 
+    #[inline(never)]
     async fn reconcile_deployment(
         &self,
         client: &KubernetesApiClient,
@@ -502,75 +514,7 @@ impl PortainerReconciler {
                 debug!("deployment {PORTAINER_AGENT_DEPLOYMENT_NAME} already exists; preserved");
             },
             Err(ApiserverError::NotFound { .. }) => {
-                let mut env = vec![
-                    json!({ "name": "LOG_LEVEL", "value": "INFO" }),
-                    json!({ "name": "EDGE", "value": "1" }),
-                    json!({ "name": "AGENT_CLUSTER_ADDR", "value": PORTAINER_AGENT_SERVICE_NAME }),
-                    json!({
-                        "name": "KUBERNETES_POD_IP",
-                        "valueFrom": { "fieldRef": { "fieldPath": "status.podIP" } }
-                    }),
-                    json!({
-                        "name": "EDGE_KEY",
-                        "valueFrom": {
-                            "secretKeyRef": {
-                                "name": PORTAINER_AGENT_SECRET_NAME,
-                                "key": "edge.key"
-                            }
-                        }
-                    }),
-                ];
-                if let Some(secret) = &self.config.edge_secret
-                    && !secret.is_empty()
-                {
-                    env.push(json!({
-                        "name": "AGENT_SECRET",
-                        "valueFrom": {
-                            "configMapKeyRef": {
-                                "name": PORTAINER_AGENT_CONFIGMAP_NAME,
-                                "key": "EDGE_SECRET",
-                                "optional": true
-                            }
-                        }
-                    }));
-                }
-                let dep_val = json!({
-                    "apiVersion": "apps/v1",
-                    "kind": "Deployment",
-                    "metadata": {
-                        "name": PORTAINER_AGENT_DEPLOYMENT_NAME,
-                        "namespace": PORTAINER_NAMESPACE,
-                    },
-                    "spec": {
-                        "replicas": 1,
-                        "selector": {
-                            "matchLabels": { "app": PORTAINER_AGENT_DEPLOYMENT_NAME }
-                        },
-                        "strategy": {},
-                        "template": {
-                            "metadata": {
-                                "labels": { "app": PORTAINER_AGENT_DEPLOYMENT_NAME }
-                            },
-                            "spec": {
-                                "serviceAccountName": PORTAINER_AGENT_SERVICE_ACCOUNT_NAME,
-                                "containers": [{
-                                    "name": "portainer-agent",
-                                    "image": self.config.image,
-                                    "imagePullPolicy": "IfNotPresent",
-                                    "ports": [
-                                        { "containerPort": PORTAINER_AGENT_PORT_EDGE, "protocol": "TCP" },
-                                        { "containerPort": PORTAINER_AGENT_PORT_HTTP, "protocol": "TCP" }
-                                    ],
-                                    "envFrom": [{
-                                        "configMapRef": { "name": PORTAINER_AGENT_CONFIGMAP_NAME }
-                                    }],
-                                    "env": env,
-                                    "resources": {}
-                                }]
-                            }
-                        }
-                    }
-                });
+                let dep_val = self.build_deployment_json();
                 match client.create_deployment(PORTAINER_NAMESPACE, dep_val).await {
                     Ok(_) => {
                         report.deployment_created = true;
@@ -588,6 +532,79 @@ impl PortainerReconciler {
             Err(err) => return Err(PortainerError::Apiserver(err)),
         }
         Ok(())
+    }
+
+    #[inline(never)]
+    fn build_deployment_json(&self) -> Value {
+        let mut env = vec![
+            json!({ "name": "LOG_LEVEL", "value": "INFO" }),
+            json!({ "name": "EDGE", "value": "1" }),
+            json!({ "name": "AGENT_CLUSTER_ADDR", "value": PORTAINER_AGENT_SERVICE_NAME }),
+            json!({
+                "name": "KUBERNETES_POD_IP",
+                "valueFrom": { "fieldRef": { "fieldPath": "status.podIP" } }
+            }),
+            json!({
+                "name": "EDGE_KEY",
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": PORTAINER_AGENT_SECRET_NAME,
+                        "key": "edge.key"
+                    }
+                }
+            }),
+        ];
+        if let Some(secret) = &self.config.edge_secret
+            && !secret.is_empty()
+        {
+            env.push(json!({
+                "name": "AGENT_SECRET",
+                "valueFrom": {
+                    "configMapKeyRef": {
+                        "name": PORTAINER_AGENT_CONFIGMAP_NAME,
+                        "key": "EDGE_SECRET",
+                        "optional": true
+                    }
+                }
+            }));
+        }
+        json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": PORTAINER_AGENT_DEPLOYMENT_NAME,
+                "namespace": PORTAINER_NAMESPACE,
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": {
+                    "matchLabels": { "app": PORTAINER_AGENT_DEPLOYMENT_NAME }
+                },
+                "strategy": {},
+                "template": {
+                    "metadata": {
+                        "labels": { "app": PORTAINER_AGENT_DEPLOYMENT_NAME }
+                    },
+                    "spec": {
+                        "serviceAccountName": PORTAINER_AGENT_SERVICE_ACCOUNT_NAME,
+                        "containers": [{
+                            "name": "portainer-agent",
+                            "image": self.config.image,
+                            "imagePullPolicy": "IfNotPresent",
+                            "ports": [
+                                { "containerPort": PORTAINER_AGENT_PORT_EDGE, "protocol": "TCP" },
+                                { "containerPort": PORTAINER_AGENT_PORT_HTTP, "protocol": "TCP" }
+                            ],
+                            "envFrom": [{
+                                "configMapRef": { "name": PORTAINER_AGENT_CONFIGMAP_NAME }
+                            }],
+                            "env": env,
+                            "resources": {}
+                        }]
+                    }
+                }
+            }
+        })
     }
 
     /// Waits for the `portainer-agent` deployment to report ready replicas.
