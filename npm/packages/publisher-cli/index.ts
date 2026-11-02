@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 export type ArchName = "amd64" | "arm64" | "aarch64";
 
@@ -22,15 +23,26 @@ export interface ArchTargetSpec {
   readonly packageDir: string;
   readonly distSuffixes: readonly string[];
   readonly rustTargets: readonly string[];
+  readonly ociCriArch: "amd64" | "arm64";
 }
 
 const NPM_ROOT = resolve(import.meta.dirname, "../..");
 const REPO_ROOT = resolve(NPM_ROOT, "..");
 
-export const REQUIRED_DIORAMA_FEATURE = "diorama/oci-cri";
-export const OCI_CRI_ENABLED_MARKER = "oci_cri_readiness_failed";
-const OCI_CRI_DISABLED_MARKER =
-  "managed oci-cri requires a build with --features oci-cri";
+export const OCI_LIB_VERSION = "v0.1.14";
+
+export const OCI_CRI_RELEASES: Readonly<
+  Record<"amd64" | "arm64", { readonly url: string; readonly sha256: string }>
+> = {
+  amd64: {
+    url: `https://github.com/geoffsee/oci-lib/releases/download/${OCI_LIB_VERSION}/oci-cri-${OCI_LIB_VERSION}-x86_64-unknown-linux-gnu.tar.gz`,
+    sha256: "0e2b24dcfb36caf413fc1a390c32652f580d99a45fe6239959de887f506601d9",
+  },
+  arm64: {
+    url: `https://github.com/geoffsee/oci-lib/releases/download/${OCI_LIB_VERSION}/oci-cri-${OCI_LIB_VERSION}-aarch64-unknown-linux-gnu.tar.gz`,
+    sha256: "391e867c06fd9b2b1c344e9bd9f11c5758499786e58f12755dc0f570460a75b6",
+  },
+};
 
 export const ARCH_TARGETS: Readonly<Record<ArchName, ArchTargetSpec>> = {
   amd64: {
@@ -38,25 +50,29 @@ export const ARCH_TARGETS: Readonly<Record<ArchName, ArchTargetSpec>> = {
     packageName: "@diorama/amd64",
     packageDir: join(NPM_ROOT, "packages", "amd64"),
     distSuffixes: ["amd64", "x86_64"],
-    rustTargets: ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"],
+    rustTargets: ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"],
+    ociCriArch: "amd64",
   },
   arm64: {
     arch: "arm64",
     packageName: "@diorama/arm64",
     packageDir: join(NPM_ROOT, "packages", "arm64"),
     distSuffixes: ["arm64", "aarch64"],
-    rustTargets: ["aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"],
+    rustTargets: ["aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl"],
+    ociCriArch: "arm64",
   },
   aarch64: {
     arch: "aarch64",
     packageName: "@diorama/aarch64",
     packageDir: join(NPM_ROOT, "packages", "aarch64"),
     distSuffixes: ["aarch64", "arm64"],
-    rustTargets: ["aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"],
+    rustTargets: ["aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl"],
+    ociCriArch: "arm64",
   },
 };
 
-const BINARIES = ["diorama", "dioramactl"] as const;
+export const BINARIES = ["diorama", "dioramactl", "oci-cri"] as const;
+export type BinaryName = (typeof BINARIES)[number];
 
 export function normalizeVersion(rawVersion: string): string {
   const cleaned = rawVersion.trim().replace(/^v/, "");
@@ -80,37 +96,10 @@ function resolveUpxBinary(): string | null {
   return null;
 }
 
-/**
- * Checks whether a compiled `diorama` binary includes the `oci-cri` feature.
- */
-export function hasOciCriFeature(binaryPath: string): boolean {
-  if (!existsSync(binaryPath) || statSync(binaryPath).size === 0) {
-    return false;
-  }
-  let bytes = readFileSync(binaryPath);
-  if (bytes.includes(Buffer.from("UPX!", "utf8"))) {
-    const upx = resolveUpxBinary();
-    if (!upx) {
-      return false;
-    }
-    const tmpDir = mkdtempSync(join(tmpdir(), "diorama-upx-verify-"));
-    const unpackedPath = join(tmpDir, basename(binaryPath));
-    try {
-      const res = spawnSync(upx, ["-q", "-d", `-o${unpackedPath}`, binaryPath], {
-        stdio: "ignore",
-      });
-      if (res.status !== 0 || !existsSync(unpackedPath)) {
-        return false;
-      }
-      bytes = readFileSync(unpackedPath);
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  }
-  if (bytes.includes(Buffer.from(OCI_CRI_DISABLED_MARKER, "utf8"))) {
-    return false;
-  }
-  return bytes.includes(Buffer.from(OCI_CRI_ENABLED_MARKER, "utf8"));
+export function sha256File(filePath: string): string {
+  const hash = createHash("sha256");
+  hash.update(readFileSync(filePath));
+  return hash.digest("hex");
 }
 
 function updateJsonFile(
@@ -207,21 +196,12 @@ function runCommand(
   }
 }
 
-function isEligiblePrebuilt(
-  binaryName: (typeof BINARIES)[number],
-  candidatePath: string,
-): boolean {
-  if (!existsSync(candidatePath) || statSync(candidatePath).size === 0) {
-    return false;
-  }
-  if (binaryName === "diorama") {
-    return hasOciCriFeature(candidatePath);
-  }
-  return true;
+function isNonEmptyFile(candidatePath: string): boolean {
+  return existsSync(candidatePath) && statSync(candidatePath).size > 0;
 }
 
 function locatePrebuiltBinary(
-  binaryName: (typeof BINARIES)[number],
+  binaryName: BinaryName,
   spec: ArchTargetSpec,
   fromDir?: string,
 ): string | null {
@@ -232,21 +212,23 @@ function locatePrebuiltBinary(
   for (const dir of searchDirs) {
     for (const suffix of spec.distSuffixes) {
       const candidate = join(dir, `${binaryName}-linux-${suffix}`);
-      if (isEligiblePrebuilt(binaryName, candidate)) {
+      if (isNonEmptyFile(candidate)) {
         return candidate;
       }
     }
     const bareCandidate = join(dir, binaryName);
-    if (fromDir && isEligiblePrebuilt(binaryName, bareCandidate)) {
+    if (fromDir && isNonEmptyFile(bareCandidate)) {
       return bareCandidate;
     }
   }
 
-  for (const target of spec.rustTargets) {
-    for (const profile of ["dist", "release"]) {
-      const candidate = join(REPO_ROOT, "target", target, profile, binaryName);
-      if (isEligiblePrebuilt(binaryName, candidate)) {
-        return candidate;
+  if (binaryName !== "oci-cri") {
+    for (const target of spec.rustTargets) {
+      for (const profile of ["dist", "release"]) {
+        const candidate = join(REPO_ROOT, "target", target, profile, binaryName);
+        if (isNonEmptyFile(candidate)) {
+          return candidate;
+        }
       }
     }
   }
@@ -254,306 +236,63 @@ function locatePrebuiltBinary(
   return null;
 }
 
-function resolveZigLibDir(): string | null {
-  const res = spawnSync("zig", ["env"], { encoding: "utf8" });
-  if (res.status === 0 && res.stdout) {
-    const match = res.stdout.match(/lib_dir["\s:=]+"([^"]+)"/);
-    if (match?.[1] && existsSync(match[1])) {
-      return match[1];
-    }
-  }
-  if (existsSync("/opt/homebrew/lib/zig")) {
-    return "/opt/homebrew/lib/zig";
-  }
-  return null;
-}
+const downloadedOciCriCache = new Map<"amd64" | "arm64", string>();
 
-function createCrossWrappers(wrapperDir: string): {
-  goWrapper: string;
-  x86MuslCc: string;
-  x86MuslCxx: string;
-  x86MuslAr: string;
-  x86MuslRanlib: string;
-  aarch64MuslCc: string;
-  aarch64MuslCxx: string;
-  aarch64MuslAr: string;
-  aarch64MuslRanlib: string;
-  aarch64UsesZig: boolean;
-} {
-  mkdirSync(wrapperDir, { recursive: true });
-  const writeScript = (name: string, content: string): string => {
-    const p = join(wrapperDir, name);
-    writeFileSync(p, content, { mode: 0o755 });
-    chmodSync(p, 0o755);
-    return p;
-  };
-
-  const zigFilter = `
-args=""
-for arg in "$@"; do
-  case "$arg" in
-    --target=*|-Wl,--fix-cortex-a53-843419) ;;
-    -Wl,/*.a|-Wl,/*.o)
-      stripped="\${arg#-Wl,}"
-      args="$args \\"$stripped\\""
-      ;;
-    *) args="$args \\"$arg\\"" ;;
-  esac
-done
-`;
-
-  const x86MuslCc = writeScript(
-    "x86_64-linux-musl-cc.sh",
-    `#!/bin/sh\n${zigFilter}eval "exec zig cc -target x86_64-linux-musl $args"\n`,
-  );
-  const x86MuslCxx = writeScript(
-    "x86_64-linux-musl-cxx.sh",
-    `#!/bin/sh\n${zigFilter}eval "exec zig c++ -target x86_64-linux-musl $args"\n`,
-  );
-  const x86MuslAr = writeScript(
-    "x86_64-linux-musl-ar.sh",
-    `#!/bin/sh\nexec zig ar "$@"\n`,
-  );
-  const x86MuslRanlib = writeScript(
-    "x86_64-linux-musl-ranlib.sh",
-    `#!/bin/sh\nexec zig ranlib "$@"\n`,
-  );
-
-  const hasBrewAarch64 = existsSync(
-    "/opt/homebrew/bin/aarch64-unknown-linux-musl-gcc",
-  );
-  const aarch64MuslCc = hasBrewAarch64
-    ? "/opt/homebrew/bin/aarch64-unknown-linux-musl-gcc"
-    : writeScript(
-        "aarch64-linux-musl-cc.sh",
-        `#!/bin/sh\n${zigFilter}eval "exec zig cc -target aarch64-linux-musl $args"\n`,
-      );
-  const aarch64MuslCxx = hasBrewAarch64
-    ? "/opt/homebrew/bin/aarch64-unknown-linux-musl-g++"
-    : writeScript(
-        "aarch64-linux-musl-cxx.sh",
-        `#!/bin/sh\n${zigFilter}eval "exec zig c++ -target aarch64-linux-musl $args"\n`,
-      );
-  const aarch64MuslAr = hasBrewAarch64
-    ? "/opt/homebrew/bin/aarch64-unknown-linux-musl-ar"
-    : x86MuslAr;
-  const aarch64MuslRanlib = hasBrewAarch64
-    ? "/opt/homebrew/bin/aarch64-unknown-linux-musl-ranlib"
-    : x86MuslRanlib;
-
-  const goWrapper = writeScript(
-    "go-cross-wrapper.sh",
-    `#!/bin/sh
-if [ "\${GOOS:-}" = "linux" ]; then
-  extar=""
-  case "\${GOARCH:-}" in
-    arm64)
-      export CC="${aarch64MuslCc}"
-      extar="${aarch64MuslAr}"
-      ;;
-    amd64)
-      export CC="${x86MuslCc}"
-      extar="${x86MuslAr}"
-      ;;
-  esac
-  if [ "\${1:-}" = "build" ] && [ -n "\$extar" ]; then
-    shift
-    exec go build "-ldflags=-s -w -extar=\$extar" "$@"
-  fi
-fi
-exec go "$@"
-`,
-  );
-
-  return {
-    goWrapper,
-    x86MuslCc,
-    x86MuslCxx,
-    x86MuslAr,
-    x86MuslRanlib,
-    aarch64MuslCc,
-    aarch64MuslCxx,
-    aarch64MuslAr,
-    aarch64MuslRanlib,
-    aarch64UsesZig: !hasBrewAarch64,
-  };
-}
-
-function compileRustTarget(
-  rustTarget: string,
-  profile: string,
+function downloadAndVerifyOciCri(
+  ociCriArch: "amd64" | "arm64",
   dryRun: boolean = false,
-): void {
-  const cargoArgs = [
-    "build",
-    "--locked",
-    "--profile",
-    profile,
-    "--target",
-    rustTarget,
-    "-p",
-    "diorama",
-    "--features",
-    REQUIRED_DIORAMA_FEATURE,
-    "-p",
-    "dioramactl",
-  ];
+): string {
+  const cached = downloadedOciCriCache.get(ociCriArch);
+  if (cached && isNonEmptyFile(cached)) {
+    return cached;
+  }
+
+  const releaseSpec = OCI_CRI_RELEASES[ociCriArch];
   if (dryRun) {
     console.log(
-      `[dry-run] (cwd: ${REPO_ROOT}) cargo ${cargoArgs.join(" ")}`,
+      `[dry-run] download ${releaseSpec.url} (sha256: ${releaseSpec.sha256})`,
     );
-    return;
+    return `<downloaded:oci-cri-${ociCriArch}>`;
   }
 
-  const cargoHome = process.env.CARGO_HOME ?? join(process.env.HOME ?? "", ".cargo");
-  const pathEnv = `${join(cargoHome, "bin")}:/opt/homebrew/bin:${process.env.PATH ?? ""}`;
-  const wrappers = createCrossWrappers(join(REPO_ROOT, "target", "cross-wrappers"));
-  const env: NodeJS.ProcessEnv = {
-    PATH: pathEnv,
-    RUSTC_WRAPPER: "",
-    CARGO_BUILD_JOBS: process.env.CARGO_BUILD_JOBS ?? "4",
-    GO: wrappers.goWrapper,
-    ROK_ALLOW_CROSS: "1",
-    ROR_ALLOW_CROSS: "1",
-    ROK_DISABLE_OPTIONAL_LIBS: "1",
-    ROR_DISABLE_OPTIONAL_LIBS: "1",
-  };
-
-  const zigLibDir = resolveZigLibDir();
-  const muslInitSrc = join(REPO_ROOT, "target", "cross-wrappers", "musl_init_args.c");
-  writeFileSync(
-    muslInitSrc,
+  const tempDir = mkdtempSync(join(tmpdir(), `diorama-oci-cri-${ociCriArch}-`));
+  const archivePath = join(tempDir, `oci-cri-${ociCriArch}.tar.gz`);
+  console.log(
+    `Downloading prebuilt oci-cri (${OCI_LIB_VERSION}, ${ociCriArch}) from ${releaseSpec.url}...`,
+  );
+  runCommand(
+    "curl",
     [
-      "#include <stddef.h>",
-      "#include <stdint.h>",
-      "extern void _init(void);",
-      "extern char **__environ;",
-      "extern char *__progname_full;",
-      'extern __attribute__((weak, visibility("hidden"))) void (*const __init_array_start)(void);',
-      'extern __attribute__((weak, visibility("hidden"))) void (*const __init_array_end)(void);',
-      "void __libc_start_init(void) {",
-      "  int argc = 0;",
-      "  char **argv = NULL;",
-      "  char **envp = __environ;",
-      "  if (envp != NULL && envp[-1] == NULL) {",
-      "    char **end = envp - 1;",
-      "    for (char **cur = end - 1; (end - cur) <= 131072; --cur) {",
-      "      size_t candidate = (size_t)(end - cur);",
-      "      if (*(size_t *)(cur - 1) == candidate && (cur[0] == __progname_full || candidate == 1)) {",
-      "        argc = (int)candidate;",
-      "        argv = cur;",
-      "        break;",
-      "      }",
-      "    }",
-      "  }",
-      "  _init();",
-      "  uintptr_t a = (uintptr_t)&__init_array_start;",
-      "  for (; a < (uintptr_t)&__init_array_end; a += sizeof(void (*)(void))) {",
-      "    (*(void (**)(int, char **, char **))a)(argc, argv, envp);",
-      "  }",
-      "}",
-      "",
-    ].join("\n"),
-    "utf8",
+      "--fail",
+      "--location",
+      "--retry",
+      "3",
+      "--proto",
+      "=https",
+      "--tlsv1.2",
+      "--output",
+      archivePath,
+      releaseSpec.url,
+    ],
+    tempDir,
   );
 
-  if (rustTarget === "aarch64-unknown-linux-musl") {
-    const initObj = join(REPO_ROOT, "target", "cross-wrappers", "musl_init_args_aarch64.o");
-    runCommand(wrappers.aarch64MuslCc, ["-O2", "-c", muslInitSrc, "-o", initObj], REPO_ROOT, env);
-    env.CC_aarch64_unknown_linux_musl = wrappers.aarch64MuslCc;
-    env.CXX_aarch64_unknown_linux_musl = wrappers.aarch64MuslCxx;
-    env.AR_aarch64_unknown_linux_musl = wrappers.aarch64MuslAr;
-    env.RANLIB_aarch64_unknown_linux_musl = wrappers.aarch64MuslRanlib;
-    env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER = wrappers.aarch64MuslCc;
-
-    if (wrappers.aarch64UsesZig) {
-      env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS =
-        `-C link-self-contained=no -C link-arg=${initObj}`;
-      if (zigLibDir) {
-        env.BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl = [
-          `-isystem ${zigLibDir}/include`,
-          `-isystem ${zigLibDir}/libc/include/aarch64-linux-musl`,
-          `-isystem ${zigLibDir}/libc/include/generic-musl`,
-          `-isystem ${zigLibDir}/libc/include/aarch64-linux-any`,
-          `-isystem ${zigLibDir}/libc/include/any-linux-any`,
-        ].join(" ");
-      }
-    } else {
-      env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS =
-        `-C link-arg=${initObj}`;
-      const sysrootRes = spawnSync(wrappers.aarch64MuslCc, ["-print-sysroot"], {
-        encoding: "utf8",
-      });
-      const sysroot = sysrootRes.stdout?.trim();
-      if (sysroot) {
-        env.BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl = `--sysroot=${sysroot}`;
-      }
-    }
-
-    const toolchainFile = join(
-      REPO_ROOT,
-      "target",
-      "aarch64-unknown-linux-musl-toolchain.cmake",
+  const actualSha256 = sha256File(archivePath);
+  if (actualSha256 !== releaseSpec.sha256) {
+    rmSync(tempDir, { recursive: true, force: true });
+    throw new Error(
+      `SHA-256 mismatch for ${releaseSpec.url}: expected ${releaseSpec.sha256}, got ${actualSha256}`,
     );
-    writeFileSync(
-      toolchainFile,
-      [
-        "set(CMAKE_SYSTEM_NAME Linux)",
-        "set(CMAKE_SYSTEM_PROCESSOR aarch64)",
-        `set(CMAKE_C_COMPILER "${wrappers.aarch64MuslCc}")`,
-        `set(CMAKE_CXX_COMPILER "${wrappers.aarch64MuslCxx}")`,
-        `set(CMAKE_ASM_COMPILER "${wrappers.aarch64MuslCc}")`,
-        `set(CMAKE_AR "${wrappers.aarch64MuslAr}" CACHE FILEPATH "Archiver" FORCE)`,
-        `set(CMAKE_RANLIB "${wrappers.aarch64MuslRanlib}" CACHE FILEPATH "Ranlib" FORCE)`,
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    env.CMAKE_TOOLCHAIN_FILE_aarch64_unknown_linux_musl = toolchainFile;
-  } else if (rustTarget === "x86_64-unknown-linux-musl") {
-    const initObj = join(REPO_ROOT, "target", "cross-wrappers", "musl_init_args_x86_64.o");
-    runCommand(wrappers.x86MuslCc, ["-O2", "-c", muslInitSrc, "-o", initObj], REPO_ROOT, env);
-    env.CC_x86_64_unknown_linux_musl = wrappers.x86MuslCc;
-    env.CXX_x86_64_unknown_linux_musl = wrappers.x86MuslCxx;
-    env.AR_x86_64_unknown_linux_musl = wrappers.x86MuslAr;
-    env.RANLIB_x86_64_unknown_linux_musl = wrappers.x86MuslRanlib;
-    env.CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = wrappers.x86MuslCc;
-    env.CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS =
-      `-C link-self-contained=no -C link-arg=${initObj}`;
-
-    if (zigLibDir) {
-      env.BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_musl = [
-        `-isystem ${zigLibDir}/include`,
-        `-isystem ${zigLibDir}/libc/include/x86_64-linux-musl`,
-        `-isystem ${zigLibDir}/libc/include/generic-musl`,
-        `-isystem ${zigLibDir}/libc/include/x86-linux-any`,
-        `-isystem ${zigLibDir}/libc/include/any-linux-any`,
-      ].join(" ");
-    }
-
-    const toolchainFile = join(
-      REPO_ROOT,
-      "target",
-      "x86_64-unknown-linux-musl-toolchain.cmake",
-    );
-    writeFileSync(
-      toolchainFile,
-      [
-        "set(CMAKE_SYSTEM_NAME Linux)",
-        "set(CMAKE_SYSTEM_PROCESSOR x86_64)",
-        `set(CMAKE_C_COMPILER "${wrappers.x86MuslCc}")`,
-        `set(CMAKE_CXX_COMPILER "${wrappers.x86MuslCxx}")`,
-        `set(CMAKE_ASM_COMPILER "${wrappers.x86MuslCc}")`,
-        `set(CMAKE_AR "${wrappers.x86MuslAr}" CACHE FILEPATH "Archiver" FORCE)`,
-        `set(CMAKE_RANLIB "${wrappers.x86MuslRanlib}" CACHE FILEPATH "Ranlib" FORCE)`,
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    env.CMAKE_TOOLCHAIN_FILE_x86_64_unknown_linux_musl = toolchainFile;
   }
 
-  runCommand("cargo", cargoArgs, REPO_ROOT, env);
+  runCommand("tar", ["-xzf", archivePath, "-C", tempDir], tempDir);
+  const extractedBin = join(tempDir, "oci-cri");
+  if (!isNonEmptyFile(extractedBin)) {
+    throw new Error(`Extracted archive from ${releaseSpec.url} did not contain oci-cri`);
+  }
+  chmodSync(extractedBin, 0o755);
+  downloadedOciCriCache.set(ociCriArch, extractedBin);
+  return extractedBin;
 }
 
 export interface StageOptions {
@@ -562,18 +301,16 @@ export interface StageOptions {
   readonly compile: boolean;
   readonly profile: string;
   readonly version?: string;
-  readonly npmRoot?: string;
   readonly dryRun?: boolean;
+  readonly npmRoot?: string;
 }
 
 export function stageBinaries(options: StageOptions): void {
   const npmRoot = options.npmRoot ?? NPM_ROOT;
   const dryRun = options.dryRun ?? false;
+
   if (options.version) {
-    const synced = syncWorkspaceVersion(options.version, npmRoot, dryRun);
-    if (!dryRun) {
-      console.log(`Synced workspace version to ${synced}`);
-    }
+    syncWorkspaceVersion(options.version, npmRoot, dryRun);
   }
 
   const compiledTargets = new Set<string>();
@@ -582,9 +319,11 @@ export function stageBinaries(options: StageOptions): void {
 
   for (const arch of options.arches) {
     const spec = ARCH_TARGETS[arch];
-    const targetBinDir = join(npmRoot, "packages", arch, "bin");
+    const pkgDir = join(npmRoot, "packages", arch);
+    const binDir = join(pkgDir, "bin");
+
     if (!dryRun) {
-      mkdirSync(targetBinDir, { recursive: true });
+      mkdirSync(binDir, { recursive: true });
     }
 
     for (const binaryName of BINARIES) {
@@ -592,49 +331,61 @@ export function stageBinaries(options: StageOptions): void {
         ? null
         : locatePrebuiltBinary(binaryName, spec, options.fromDir);
 
+      if (!sourcePath && binaryName === "oci-cri") {
+        sourcePath = downloadAndVerifyOciCri(spec.ociCriArch, dryRun);
+      }
+
       if (!sourcePath) {
         const rustTarget = spec.rustTargets[0]!;
         if (!compiledTargets.has(rustTarget)) {
-          if (!dryRun) {
+          const cargoArgs = [
+            "build",
+            "--locked",
+            "--profile",
+            options.profile,
+            "-p",
+            "diorama",
+            "-p",
+            "dioramactl",
+            "--target",
+            rustTarget,
+          ];
+          if (dryRun) {
             console.log(
-              `Compiling ${rustTarget} (profile: ${options.profile}, features: ${REQUIRED_DIORAMA_FEATURE})...`,
+              `[dry-run] (cwd: ${REPO_ROOT}) cargo ${cargoArgs.join(" ")}`,
             );
+          } else {
+            console.log(
+              `Building diorama and dioramactl for ${rustTarget} (profile: ${options.profile})...`,
+            );
+            runCommand("cargo", cargoArgs, REPO_ROOT);
           }
-          compileRustTarget(rustTarget, options.profile, dryRun);
           compiledTargets.add(rustTarget);
         }
-        const profileDir = options.profile === "dev" ? "debug" : options.profile;
-        const builtPath = join(
+        sourcePath = join(
           REPO_ROOT,
           "target",
           rustTarget,
-          profileDir,
+          options.profile,
           binaryName,
         );
-        if (!dryRun && !existsSync(builtPath)) {
-          throw new Error(`Expected compiled binary at ${builtPath}`);
-        }
-        sourcePath = builtPath;
       }
 
-      const destPath = join(targetBinDir, binaryName);
+      const destPath = join(binDir, binaryName);
       if (dryRun) {
-        const sizeInfo = existsSync(sourcePath)
-          ? ` (${(statSync(sourcePath).size / (1024 * 1024)).toFixed(2)} MB, oci-cri enabled)`
-          : ` (will be compiled with --features ${REQUIRED_DIORAMA_FEATURE})`;
         console.log(
-          `[dry-run] stage ${spec.packageName}/bin/${binaryName} <- ${sourcePath}${sizeInfo} (chmod 0755 -> ${destPath})`,
+          `[dry-run] stage ${sourcePath} -> ${destPath} (chmod 0755${upxBin ? ", upx --best --lzma" : ""})`,
         );
       } else {
-        if (binaryName === "diorama" && !hasOciCriFeature(sourcePath)) {
+        if (!existsSync(sourcePath)) {
           throw new Error(
-            `Binary ${sourcePath} was not built with --features ${REQUIRED_DIORAMA_FEATURE}`,
+            `Expected binary not found at ${sourcePath} for ${spec.packageName}`,
           );
         }
         const rawBytes = statSync(sourcePath).size;
-        const alreadyCompressed = compressedSources.get(sourcePath);
-        if (alreadyCompressed && existsSync(alreadyCompressed)) {
-          copyFileSync(alreadyCompressed, destPath);
+        const alreadyCompressedPath = compressedSources.get(sourcePath);
+        if (alreadyCompressedPath && existsSync(alreadyCompressedPath)) {
+          copyFileSync(alreadyCompressedPath, destPath);
         } else {
           copyFileSync(sourcePath, destPath);
           chmodSync(destPath, 0o755);
@@ -666,14 +417,9 @@ export function verifyPackageStaged(
   const pkgDir = join(npmRoot, "packages", arch);
   for (const binaryName of BINARIES) {
     const binPath = join(pkgDir, "bin", binaryName);
-    if (!existsSync(binPath) || statSync(binPath).size === 0) {
+    if (!isNonEmptyFile(binPath)) {
       throw new Error(
         `Missing staged binary ${binPath} for @diorama/${arch}. Run "bun run packages/publisher-cli/index.ts build" first.`,
-      );
-    }
-    if (binaryName === "diorama" && !hasOciCriFeature(binPath)) {
-      throw new Error(
-        `Staged binary ${binPath} for @diorama/${arch} is missing --features ${REQUIRED_DIORAMA_FEATURE}.`,
       );
     }
   }
@@ -690,9 +436,9 @@ function packPackages(
     if (dryRun) {
       for (const binaryName of BINARIES) {
         const binPath = join(pkgDir, "bin", binaryName);
-        const status = isEligiblePrebuilt(binaryName, binPath)
-          ? `present (${(statSync(binPath).size / (1024 * 1024)).toFixed(2)} MB, oci-cri verified)`
-          : "not yet staged (requires --features diorama/oci-cri build)";
+        const status = isNonEmptyFile(binPath)
+          ? `present (${(statSync(binPath).size / (1024 * 1024)).toFixed(2)} MB)`
+          : "not yet staged";
         console.log(`[dry-run] verify ${spec.packageName}/bin/${binaryName}: ${status}`);
       }
       console.log(`[dry-run] (cwd: ${pkgDir}) bun pm pack`);
@@ -884,14 +630,17 @@ async function publishPackages(options: PublishOptions): Promise<void> {
       }
       const stagedStatuses = BINARIES.map((bin) => {
         const binPath = join(pkgDir, "bin", bin);
-        if (isEligiblePrebuilt(bin, binPath)) {
-          return `bin/${bin} (${(statSync(binPath).size / (1024 * 1024)).toFixed(2)} MB staged, oci-cri verified)`;
+        if (isNonEmptyFile(binPath)) {
+          return `bin/${bin} (${(statSync(binPath).size / (1024 * 1024)).toFixed(2)} MB staged)`;
         }
         const prebuilt = locatePrebuiltBinary(bin, spec);
         if (prebuilt) {
           return `bin/${bin} (ready to stage from ${prebuilt}, ${(statSync(prebuilt).size / (1024 * 1024)).toFixed(2)} MB)`;
         }
-        return `bin/${bin} (requires cargo build --features ${REQUIRED_DIORAMA_FEATURE})`;
+        if (bin === "oci-cri") {
+          return `bin/${bin} (will download from geoffsee/oci-lib@${OCI_LIB_VERSION})`;
+        }
+        return `bin/${bin} (requires cargo build)`;
       });
       console.log(
         `[dry-run] publish ${pkgJson.name}@${pkgVersion} -> (cwd: ${pkgDir}) bun ${args.join(" ")}`,
@@ -956,9 +705,9 @@ function printHelp(): void {
 
 Commands:
   version <semver>   Sync package.json versions across @diorama/cli and @diorama/{amd64,arm64,aarch64}
-  build              Build (with --features diorama/oci-cri) or stage binaries into packages/<arch>/bin
-  stage              Alias for build (stages prebuilt oci-cri release binaries when present)
-  pack               Verify staged oci-cri binaries and create .tgz tarballs via "bun pm pack"
+  build              Stage release binaries and prebuilt oci-cri into packages/<arch>/bin
+  stage              Alias for build (stages prebuilt release binaries when present)
+  pack               Verify staged binaries and create .tgz tarballs via "bun pm pack"
   publish            Publish @diorama/{amd64,arm64,aarch64} and @diorama/cli in dependency order
 
 Options:

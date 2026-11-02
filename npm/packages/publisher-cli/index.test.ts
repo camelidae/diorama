@@ -9,10 +9,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  hasOciCriFeature,
   inferNpmDistTag,
   normalizeVersion,
-  OCI_CRI_ENABLED_MARKER,
+  OCI_CRI_RELEASES,
+  OCI_LIB_VERSION,
+  sha256File,
   stageBinaries,
   verifyPackageStaged,
 } from "./index.ts";
@@ -28,24 +29,24 @@ describe("@diorama/publisher-cli build & publish helper", () => {
     expect(inferNpmDistTag("0.1.0")).toBe("latest");
   });
 
-  test("detects oci-cri feature marker and rejects non-oci-cri diorama binaries", () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "diorama-oci-cri-check-"));
+  test("pins oci-lib release URLs and SHA-256 digests", () => {
+    expect(OCI_LIB_VERSION).toBe("v0.1.14");
+    expect(OCI_CRI_RELEASES.amd64.sha256).toHaveLength(64);
+    expect(OCI_CRI_RELEASES.arm64.sha256).toHaveLength(64);
+
+    const tempRoot = mkdtempSync(join(tmpdir(), "diorama-sha256-check-"));
     try {
-      const enabledBin = join(tempRoot, "diorama-oci");
-      const disabledBin = join(tempRoot, "diorama-no-oci");
-      writeFileSync(enabledBin, `ELF...${OCI_CRI_ENABLED_MARKER}...`);
-      writeFileSync(
-        disabledBin,
-        "ELF...managed oci-cri requires a build with --features oci-cri...",
+      const sample = join(tempRoot, "sample.bin");
+      writeFileSync(sample, "diorama-test-payload");
+      expect(sha256File(sample)).toBe(
+        "256dc006eb7573f77dc92200412c8196d30b6ac359e4c2ba4f8fb3fcb628200e",
       );
-      expect(hasOciCriFeature(enabledBin)).toBe(true);
-      expect(hasOciCriFeature(disabledBin)).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
-  test("syncs versions and stages prebuilt oci-cri release binaries across workspace", () => {
+  test("syncs versions and stages prebuilt release binaries across workspace", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "diorama-npm-test-"));
     const distDir = join(tempRoot, "dist");
     const npmRoot = join(tempRoot, "npm");
@@ -57,14 +58,12 @@ describe("@diorama/publisher-cli build & publish helper", () => {
           join(npmRoot, "packages", arch, "package.json"),
           JSON.stringify({ name: `@diorama/${arch}`, version: "0.0.0" }),
         );
-        writeFileSync(
-          join(distDir, `diorama-linux-${arch}`),
-          `diorama-${arch}-${OCI_CRI_ENABLED_MARKER}`,
-        );
+        writeFileSync(join(distDir, `diorama-linux-${arch}`), `diorama-${arch}`);
         writeFileSync(
           join(distDir, `dioramactl-linux-${arch}`),
           `dioramactl-${arch}`,
         );
+        writeFileSync(join(distDir, `oci-cri-linux-${arch}`), `oci-cri-${arch}`);
       }
       writeFileSync(
         join(npmRoot, "package.json"),
@@ -80,18 +79,18 @@ describe("@diorama/publisher-cli build & publish helper", () => {
         fromDir: distDir,
         compile: false,
         profile: "dist",
-        version: "v0.1.0-pr.9",
+        version: "v0.1.1",
         npmRoot,
       });
 
       const rootManifest = JSON.parse(
         readFileSync(join(npmRoot, "package.json"), "utf8"),
       );
-      expect(rootManifest.version).toBe("0.1.0-pr.9");
+      expect(rootManifest.version).toBe("0.1.1");
       expect(rootManifest.optionalDependencies).toEqual({
-        "@diorama/amd64": "0.1.0-pr.9",
-        "@diorama/arm64": "0.1.0-pr.9",
-        "@diorama/aarch64": "0.1.0-pr.9",
+        "@diorama/amd64": "0.1.1",
+        "@diorama/arm64": "0.1.1",
+        "@diorama/aarch64": "0.1.1",
       });
 
       for (const arch of ["amd64", "arm64", "aarch64"] as const) {
