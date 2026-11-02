@@ -11,6 +11,7 @@ pub mod external;
 pub mod ownership;
 pub mod provider;
 pub mod readiness;
+pub mod standalone;
 pub mod workload;
 
 pub use cgroup::{
@@ -29,6 +30,10 @@ pub use provider::{CriProvider, ProviderInfo, detect_provider};
 pub use readiness::{
     DEFAULT_READINESS_TIMEOUT, DEFAULT_RETRY_INTERVAL, ReadinessError, check_image_service,
     check_runtime_version, probe_cri_readiness,
+};
+pub use standalone::{
+    COMPONENT_STANDALONE_OCI_CRI, StandaloneOciCriError, StandaloneOciCriOptions,
+    StandaloneOciCriService, StandaloneReadinessMode, prepare_standalone_socket,
 };
 pub use tonic;
 pub use workload::{CriClient, image_spec};

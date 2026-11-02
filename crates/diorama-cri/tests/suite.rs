@@ -4,6 +4,8 @@ mod cgroup_negotiation;
 mod external_readiness;
 #[path = "runtime_ownership.rs"]
 mod runtime_ownership;
+#[path = "standalone_supervision.rs"]
+mod standalone_supervision;
 #[path = "wire_presence.rs"]
 mod wire_presence;
 #[path = "workload_access.rs"]
