@@ -56,18 +56,134 @@ export function resolvePlatformPackages(
 }
 
 /**
+ * Verifies that a resolved candidate binary and all parent directories up to
+ * allowedRootDir are secure against untrusted manipulation, symlink escapes,
+ * and insecure permissions when running as root.
+ *
+ * @param {string} candidatePath
+ * @param {string} allowedRootDir
+ * @param {{ euid?: number }} [options]
+ * @returns {string}
+ */
+export function verifyTrustedBinaryPath(
+  candidatePath,
+  allowedRootDir,
+  options = undefined,
+) {
+  const fs = process.getBuiltinModule("node:fs");
+  const path = process.getBuiltinModule("node:path");
+
+  const absCandidate = path.resolve(candidatePath);
+  const absAllowedRoot = path.resolve(allowedRootDir);
+
+  const relFromRoot = path.relative(absAllowedRoot, absCandidate);
+  if (relFromRoot.startsWith("..") || path.isAbsolute(relFromRoot)) {
+    throw new Error(
+      `Candidate binary "${candidatePath}" is outside allowed root "${allowedRootDir}".`,
+    );
+  }
+
+  let realAllowedRoot;
+  try {
+    realAllowedRoot = fs.realpathSync(absAllowedRoot);
+  } catch {
+    realAllowedRoot = absAllowedRoot;
+  }
+
+  const isWithinAllowed = (target) => {
+    const r1 = path.relative(realAllowedRoot, target);
+    if (r1 === "" || (!r1.startsWith("..") && !path.isAbsolute(r1))) {
+      return true;
+    }
+    const r2 = path.relative(absAllowedRoot, target);
+    return r2 === "" || (!r2.startsWith("..") && !path.isAbsolute(r2));
+  };
+
+  const euid = options?.euid ?? process.geteuid?.() ?? -1;
+  const isRoot = euid === 0;
+
+  const chain = [];
+  let current = absCandidate;
+  while (true) {
+    chain.push(current);
+    if (current === absAllowedRoot) {
+      break;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+
+  const stats = [];
+  for (const item of chain) {
+    const stat = fs.lstatSync(item);
+    stats.push({ item, stat });
+
+    if (stat.isSymbolicLink()) {
+      const realTarget = fs.realpathSync(item);
+      if (!isWithinAllowed(realTarget)) {
+        throw new Error(
+          `Untrusted symlink detected: "${item}" resolves outside allowed root "${allowedRootDir}" to "${realTarget}".`,
+        );
+      }
+      if (isRoot) {
+        const targetStat = fs.statSync(item);
+        if ((targetStat.mode & 0o022) !== 0) {
+          throw new Error(
+            `Insecure target permissions: "${item}" target "${realTarget}" is writable by group or others (mode: 0o${(targetStat.mode & 0o777).toString(8)}).`,
+          );
+        }
+      }
+    } else if (isRoot && (stat.mode & 0o022) !== 0) {
+      throw new Error(
+        `Insecure permissions: "${item}" is writable by group or others (mode: 0o${(stat.mode & 0o777).toString(8)}).`,
+      );
+    }
+  }
+
+  if (isRoot) {
+    for (const { item, stat } of stats) {
+      if (stat.isSymbolicLink()) {
+        const targetStat = fs.statSync(item);
+        if (targetStat.uid !== 0) {
+          const realTarget = fs.realpathSync(item);
+          throw new Error(
+            `Untrusted target ownership: "${item}" target "${realTarget}" is owned by UID ${targetStat.uid}, expected root (0).`,
+          );
+        }
+        if (stat.uid !== 0) {
+          throw new Error(
+            `Untrusted symlink ownership: "${item}" is owned by UID ${stat.uid}, expected root (0).`,
+          );
+        }
+      } else if (stat.uid !== 0) {
+        throw new Error(
+          `Untrusted ownership: "${item}" is owned by UID ${stat.uid}, expected root (0).`,
+        );
+      }
+    }
+  }
+
+  return candidatePath;
+}
+
+/**
  * Resolves the absolute path to a native binary (`diorama`, `dioramactl`, or `oci-cri`)
  * from the installed platform-specific optional dependency or local workspace.
  *
  * @param {"diorama" | "dioramactl" | "oci-cri"} binaryName
  * @param {string} [platform]
  * @param {string} [arch]
+ * @param {{ euid?: number }} [options]
  * @returns {string}
  */
 export function resolveBinaryPath(
   binaryName,
   platform = process.platform,
   arch = process.arch,
+  options = undefined,
 ) {
   if (
     binaryName !== "diorama" &&
@@ -87,21 +203,27 @@ export function resolveBinaryPath(
   }
 
   for (const pkg of entry.packages) {
+    let pkgJsonPath;
     try {
-      const pkgJsonPath = require.resolve(`${pkg}/package.json`);
-      const candidate = join(dirname(pkgJsonPath), "bin", binaryName);
-      if (existsSync(candidate)) {
-        return candidate;
-      }
+      pkgJsonPath = require.resolve(`${pkg}/package.json`, {
+        paths: [import.meta.dirname, PACKAGES_DIR],
+      });
     } catch {
       // Try next candidate or workspace fallback
+      continue;
+    }
+    const pkgDir = dirname(pkgJsonPath);
+    const candidate = join(pkgDir, "bin", binaryName);
+    if (existsSync(candidate)) {
+      return verifyTrustedBinaryPath(candidate, pkgDir, options);
     }
   }
 
   for (const dir of entry.dirs) {
-    const candidate = join(PACKAGES_DIR, dir, "bin", binaryName);
+    const pkgDir = join(PACKAGES_DIR, dir);
+    const candidate = join(pkgDir, "bin", binaryName);
     if (existsSync(candidate)) {
-      return candidate;
+      return verifyTrustedBinaryPath(candidate, pkgDir, options);
     }
   }
 
