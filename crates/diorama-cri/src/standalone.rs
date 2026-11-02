@@ -5,7 +5,6 @@
 //! signal propagation, reclaims stale socket inodes safely, and unlinks sockets on clean exit.
 
 use std::fmt;
-use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -97,7 +96,7 @@ impl From<std::io::Error> for StandaloneOciCriError {
 /// Refuses regular files, directories, symlinks, or live listeners without unlinking them.
 /// Reclaims and safely unlinks stale Unix domain socket files left behind from crashed runs.
 pub async fn prepare_standalone_socket(socket_path: &Path) -> Result<(), StandaloneOciCriError> {
-    match fs::symlink_metadata(socket_path) {
+    match tokio::fs::symlink_metadata(socket_path).await {
         Ok(meta) => {
             // Refuse symlinks, regular files, and directories.
             // Notice: symlink_metadata does not follow symlinks, so a symlink returns
@@ -127,7 +126,7 @@ pub async fn prepare_standalone_socket(socket_path: &Path) -> Result<(), Standal
                         || e.kind() == std::io::ErrorKind::NotFound =>
                 {
                     // Stale socket from a crashed or terminated run; safe to reclaim.
-                    fs::remove_file(socket_path)?;
+                    tokio::fs::remove_file(socket_path).await?;
                     Ok(())
                 },
                 Ok(Err(e)) => Err(StandaloneOciCriError::Io(e)),
@@ -142,9 +141,9 @@ pub async fn prepare_standalone_socket(socket_path: &Path) -> Result<(), Standal
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if let Some(parent) = socket_path.parent()
                 && !parent.as_os_str().is_empty()
-                && !parent.exists()
+                && !tokio::fs::try_exists(parent).await.unwrap_or(false)
             {
-                fs::create_dir_all(parent)?;
+                tokio::fs::create_dir_all(parent).await?;
             }
             Ok(())
         },
@@ -377,11 +376,11 @@ async fn run_readiness_probe(options: &StandaloneOciCriOptions) -> Result<(), Ad
     }
 }
 
-fn remove_socket_if_exists(path: &Path) {
-    if let Ok(meta) = fs::symlink_metadata(path)
+async fn remove_socket_if_exists(path: &Path) {
+    if let Ok(meta) = tokio::fs::symlink_metadata(path).await
         && meta.file_type().is_socket()
     {
-        let _ = fs::remove_file(path);
+        let _ = tokio::fs::remove_file(path).await;
     }
 }
 
@@ -410,7 +409,7 @@ impl Adapter for StandaloneOciCriService {
 
             // Clean up socket file on clean exit
             if result.is_ok() {
-                remove_socket_if_exists(&self.options.socket_path);
+                remove_socket_if_exists(&self.options.socket_path).await;
             }
 
             result

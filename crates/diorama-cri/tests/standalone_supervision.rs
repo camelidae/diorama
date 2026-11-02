@@ -24,86 +24,75 @@ use tempfile::TempDir;
 use tokio::net::UnixListener;
 use tonic::codegen::http::{HeaderMap, Response, StatusCode};
 
-fn encode_grpc_message<M: Message>(msg: &M) -> Bytes {
-    let mut encoded = Vec::new();
-    msg.encode(&mut encoded).expect("encode protobuf message");
-    let mut buf = BytesMut::with_capacity(5 + encoded.len());
-    buf.put_u8(0);
-    let len = u32::try_from(encoded.len()).expect("message length fits in u32");
-    buf.put_u32(len);
-    buf.put_slice(&encoded);
-    buf.freeze()
+fn serialize_grpc<M: Message>(msg: &M) -> Bytes {
+    let raw = msg.encode_to_vec();
+    let mut out = BytesMut::with_capacity(5 + raw.len());
+    out.put_u8(0);
+    let len = u32::try_from(raw.len()).expect("grpc frame length fits u32");
+    out.put_u32(len);
+    out.put_slice(&raw);
+    out.freeze()
 }
 
-fn build_mock_payload(path: &str, runtime_name: &str, runtime_version: &str) -> Option<Bytes> {
-    if path.contains("Version") {
-        let resp = VersionResponse {
-            version: "0.1.0".into(),
-            runtime_name: runtime_name.to_string(),
-            runtime_version: runtime_version.to_string(),
-            runtime_api_version: "v1".into(),
-        };
-        Some(encode_grpc_message(&resp))
-    } else if path.contains("ListImages") {
-        let resp = ListImagesResponse { images: vec![] };
-        Some(encode_grpc_message(&resp))
-    } else {
-        None
-    }
-}
-
-fn handle_mock_h2_stream(mut respond: server::SendResponse<Bytes>, payload: Bytes) {
-    let response = Response::builder()
+fn send_grpc_reply(mut send: server::SendResponse<Bytes>, data: Bytes) {
+    let header = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/grpc")
         .body(())
         .unwrap();
-    let Ok(mut send_stream) = respond.send_response(response, false) else {
+    let Ok(mut stream) = send.send_response(header, false) else {
         return;
     };
-    let _ = send_stream.send_data(payload, false);
+    let _ = stream.send_data(data, false);
     let mut trailers = HeaderMap::new();
     trailers.insert("grpc-status", "0".parse().unwrap());
-    let _ = send_stream.send_trailers(trailers);
+    let _ = stream.send_trailers(trailers);
 }
 
-async fn run_mock_connection(
+async fn handle_h2_connection(
     stream: tokio::net::UnixStream,
-    runtime_name: String,
-    runtime_version: String,
-    stop_flag: Arc<AtomicBool>,
+    ver: Bytes,
+    img: Bytes,
+    stopped: Arc<AtomicBool>,
 ) {
-    let Ok(mut h2) = server::handshake(stream).await else {
+    let Ok(mut h2_conn) = server::handshake(stream).await else {
         return;
     };
-
-    while let Some(req_result) = h2.accept().await {
-        if stop_flag.load(Ordering::Relaxed) {
+    while let Some(Ok((req, send))) = h2_conn.accept().await {
+        if stopped.load(Ordering::Relaxed) {
             break;
         }
-        let Ok((request, respond)) = req_result else {
-            break;
+        let payload = match req.uri().path() {
+            p if p.contains("Version") => ver.clone(),
+            p if p.contains("ListImages") => img.clone(),
+            _ => continue,
         };
-
-        let path = request.uri().path().to_string();
-        if let Some(data) = build_mock_payload(&path, &runtime_name, &runtime_version) {
-            handle_mock_h2_stream(respond, data);
-        }
+        send_grpc_reply(send, payload);
     }
 }
+
 fn spawn_mock_cri_listener(listener: UnixListener, stopped: Arc<AtomicBool>) {
+    let ver_reply = serialize_grpc(&VersionResponse {
+        version: "0.1.0".into(),
+        runtime_name: "oci-cri".into(),
+        runtime_version: "1.0.0".into(),
+        runtime_api_version: "v1".into(),
+    });
+    let img_reply = serialize_grpc(&ListImagesResponse { images: vec![] });
+
     tokio::spawn(async move {
         while !stopped.load(Ordering::Relaxed) {
-            let accept = tokio::time::timeout(Duration::from_millis(500), listener.accept()).await;
-            if let Ok(Ok((stream, _))) = accept {
-                let stop_conn = Arc::clone(&stopped);
-                tokio::spawn(run_mock_connection(
-                    stream,
-                    "oci-cri".into(),
-                    "1.0.0".into(),
-                    stop_conn,
-                ));
-            }
+            let Ok(Ok((stream, _))) =
+                tokio::time::timeout(Duration::from_millis(250), listener.accept()).await
+            else {
+                continue;
+            };
+
+            let ver = ver_reply.clone();
+            let img = img_reply.clone();
+            let stopped_conn = Arc::clone(&stopped);
+
+            tokio::spawn(handle_h2_connection(stream, ver, img, stopped_conn));
         }
     });
 }
