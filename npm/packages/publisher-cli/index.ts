@@ -5,6 +5,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 
 export type ArchName = "amd64" | "arm64" | "aarch64";
 
@@ -30,9 +31,38 @@ const NPM_ROOT = resolve(import.meta.dirname, "../..");
 const REPO_ROOT = resolve(NPM_ROOT, "..");
 
 export const OCI_LIB_VERSION = "v0.1.14";
+export const MAX_OCI_CRI_ARCHIVE_BYTES = 64 * 1024 * 1024;
+export const MAX_OCI_CRI_BINARY_BYTES = 128 * 1024 * 1024;
+export const ALLOWED_OCI_LIB_RELEASE_PREFIX =
+  "https://github.com/geoffsee/oci-lib/releases/download/";
+
+export interface OciCriReleaseSpec {
+  readonly url: string;
+  readonly sha256: string;
+}
+
+export function validateOciCriReleaseSpec(
+  arch: string,
+  spec: { readonly url: string; readonly sha256: string },
+): void {
+  if (!spec || typeof spec !== "object") {
+    throw new Error(`Release spec for architecture "${arch}" must be an object`);
+  }
+  const expectedPrefix = `${ALLOWED_OCI_LIB_RELEASE_PREFIX}${OCI_LIB_VERSION}/`;
+  if (!spec.url || typeof spec.url !== "string" || !spec.url.startsWith(expectedPrefix)) {
+    throw new Error(
+      `Invalid release URL for architecture "${arch}": expected URL to start with "${expectedPrefix}", got "${spec?.url}"`,
+    );
+  }
+  if (!spec.sha256 || typeof spec.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(spec.sha256)) {
+    throw new Error(
+      `Invalid SHA-256 digest for architecture "${arch}": expected 64-character lowercase hex digest, got "${spec?.sha256}"`,
+    );
+  }
+}
 
 export const OCI_CRI_RELEASES: Readonly<
-  Record<"amd64" | "arm64", { readonly url: string; readonly sha256: string }>
+  Record<"amd64" | "arm64", OciCriReleaseSpec>
 > = {
   amd64: {
     url: `https://github.com/geoffsee/oci-lib/releases/download/${OCI_LIB_VERSION}/oci-cri-${OCI_LIB_VERSION}-x86_64-unknown-linux-gnu.tar.gz`,
@@ -238,6 +268,192 @@ function locatePrebuiltBinary(
 
 const downloadedOciCriCache = new Map<"amd64" | "arm64", string>();
 
+export function verifyArchiveSha256(
+  archivePath: string,
+  expectedSha256: string,
+  maxBytes: number = MAX_OCI_CRI_ARCHIVE_BYTES,
+): string {
+  let stat;
+  try {
+    stat = lstatSync(archivePath);
+  } catch (err) {
+    throw new Error(`Archive not found at ${archivePath}: ${err}`);
+  }
+
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Archive at ${archivePath} is a symbolic link`);
+  }
+  if (!stat.isFile()) {
+    throw new Error(`Archive at ${archivePath} is not a regular file`);
+  }
+  if (stat.size === 0) {
+    throw new Error(`Archive at ${archivePath} is empty (0 bytes)`);
+  }
+  if (stat.size > maxBytes) {
+    throw new Error(
+      `Archive at ${archivePath} exceeds maximum size limit of ${maxBytes} bytes (size: ${stat.size} bytes)`,
+    );
+  }
+
+  const actualSha256 = sha256File(archivePath);
+  if (actualSha256 !== expectedSha256) {
+    throw new Error(
+      `SHA-256 mismatch for ${archivePath}: expected ${expectedSha256}, got ${actualSha256}`,
+    );
+  }
+
+  return actualSha256;
+}
+
+function resolveTarBinary(): string {
+  for (const candidate of ["/usr/bin/tar", "/bin/tar"]) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return "tar";
+}
+
+function extractTarEntryPath(line: string): string {
+  const tokens = line.trim().split(/\s+/);
+  if (
+    tokens.length >= 6 &&
+    /^\d{4}-\d{2}-\d{2}$/.test(tokens[3]!) &&
+    /^\d{1,2}:\d{2}/.test(tokens[4]!)
+  ) {
+    let idx = 0;
+    for (let i = 0; i < 5; i++) {
+      idx = line.indexOf(tokens[i]!, idx) + tokens[i]!.length;
+    }
+    return line.slice(idx).trim();
+  }
+  if (tokens.length >= 9 && /^[A-Za-z]{3}$/.test(tokens[5]!)) {
+    let idx = 0;
+    for (let i = 0; i < 8; i++) {
+      idx = line.indexOf(tokens[i]!, idx) + tokens[i]!.length;
+    }
+    return line.slice(idx).trim();
+  }
+  if (tokens.length >= 2) {
+    return tokens[tokens.length - 1]!;
+  }
+  throw new Error(`Unable to parse entry path from archive entry: ${line}`);
+}
+
+export function extractAndValidateOciCriArchive(
+  archivePath: string,
+  destDir: string,
+  maxBinaryBytes: number = MAX_OCI_CRI_BINARY_BYTES,
+): string {
+  const tarBin = resolveTarBinary();
+  const listRes = spawnSync(tarBin, ["-ztvf", archivePath], {
+    encoding: "utf8",
+  });
+  if (listRes.error) {
+    throw listRes.error;
+  }
+  if (listRes.status !== 0) {
+    throw new Error(
+      `Failed to inspect archive ${archivePath}: ${listRes.stderr?.trim() || `exit code ${listRes.status}`}`,
+    );
+  }
+
+  const entries = listRes.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (entries.length === 0) {
+    throw new Error(`Archive ${archivePath} contains no entries`);
+  }
+
+  for (const entry of entries) {
+    const firstChar = entry.charAt(0);
+    if (firstChar !== "-" && firstChar !== "d") {
+      throw new Error(
+        `Disallowed entry type '${firstChar}' in archive entry: ${entry}`,
+      );
+    }
+    if (entry.includes(" -> ") || entry.includes(" link to ")) {
+      throw new Error(`Disallowed link entry in archive: ${entry}`);
+    }
+
+    const entryPath = extractTarEntryPath(entry);
+    if (entryPath.startsWith("/") || entryPath.startsWith("\\") || isAbsolute(entryPath)) {
+      throw new Error(
+        `Disallowed absolute path in archive entry: "${entryPath}"`,
+      );
+    }
+    const segments = entryPath.split(/[/\\]+/);
+    if (segments.includes("..")) {
+      throw new Error(
+        `Path traversal ("..") detected in archive entry: "${entryPath}"`,
+      );
+    }
+    const normalized = normalize(entryPath);
+    if (
+      normalized.startsWith("..") ||
+      normalized === ".." ||
+      isAbsolute(normalized)
+    ) {
+      throw new Error(
+        `Entry path "${entryPath}" escapes archive root (normalizes to "${normalized}")`,
+      );
+    }
+  }
+
+  const extractRes = spawnSync(
+    tarBin,
+    [
+      "-xzf",
+      archivePath,
+      "--no-same-owner",
+      "--no-same-permissions",
+      "-C",
+      destDir,
+    ],
+    {
+      cwd: destDir,
+      encoding: "utf8",
+    },
+  );
+  if (extractRes.error) {
+    throw extractRes.error;
+  }
+  if (extractRes.status !== 0) {
+    throw new Error(
+      `Failed to extract archive ${archivePath}: ${extractRes.stderr?.trim() || `exit code ${extractRes.status}`}`,
+    );
+  }
+
+  const extractedBin = join(destDir, "oci-cri");
+  let binStat;
+  try {
+    binStat = lstatSync(extractedBin);
+  } catch {
+    throw new Error(
+      `Extracted archive did not contain oci-cri at ${extractedBin}`,
+    );
+  }
+
+  if (binStat.isSymbolicLink()) {
+    throw new Error(`Extracted binary ${extractedBin} is a symbolic link`);
+  }
+  if (!binStat.isFile()) {
+    throw new Error(`Extracted binary ${extractedBin} is not a regular file`);
+  }
+  if (binStat.size <= 0) {
+    throw new Error(`Extracted binary ${extractedBin} is empty (0 bytes)`);
+  }
+  if (binStat.size > maxBinaryBytes) {
+    throw new Error(
+      `Extracted binary ${extractedBin} exceeds maximum size limit of ${maxBinaryBytes} bytes (size: ${binStat.size} bytes)`,
+    );
+  }
+
+  return extractedBin;
+}
+
 function downloadAndVerifyOciCri(
   ociCriArch: "amd64" | "arm64",
   dryRun: boolean = false,
@@ -248,6 +464,8 @@ function downloadAndVerifyOciCri(
   }
 
   const releaseSpec = OCI_CRI_RELEASES[ociCriArch];
+  validateOciCriReleaseSpec(ociCriArch, releaseSpec);
+
   if (dryRun) {
     console.log(
       `[dry-run] download ${releaseSpec.url} (sha256: ${releaseSpec.sha256})`,
@@ -257,42 +475,44 @@ function downloadAndVerifyOciCri(
 
   const tempDir = mkdtempSync(join(tmpdir(), `diorama-oci-cri-${ociCriArch}-`));
   const archivePath = join(tempDir, `oci-cri-${ociCriArch}.tar.gz`);
-  console.log(
-    `Downloading prebuilt oci-cri (${OCI_LIB_VERSION}, ${ociCriArch}) from ${releaseSpec.url}...`,
-  );
-  runCommand(
-    "curl",
-    [
-      "--fail",
-      "--location",
-      "--retry",
-      "3",
-      "--proto",
-      "=https",
-      "--tlsv1.2",
-      "--output",
-      archivePath,
-      releaseSpec.url,
-    ],
-    tempDir,
-  );
-
-  const actualSha256 = sha256File(archivePath);
-  if (actualSha256 !== releaseSpec.sha256) {
-    rmSync(tempDir, { recursive: true, force: true });
-    throw new Error(
-      `SHA-256 mismatch for ${releaseSpec.url}: expected ${releaseSpec.sha256}, got ${actualSha256}`,
+  try {
+    console.log(
+      `Downloading prebuilt oci-cri (${OCI_LIB_VERSION}, ${ociCriArch}) from ${releaseSpec.url}...`,
     );
-  }
+    runCommand(
+      "curl",
+      [
+        "--fail",
+        "--location",
+        "--retry",
+        "3",
+        "--proto",
+        "=https",
+        "--tlsv1.2",
+        "--output",
+        archivePath,
+        releaseSpec.url,
+      ],
+      tempDir,
+    );
 
-  runCommand("tar", ["-xzf", archivePath, "-C", tempDir], tempDir);
-  const extractedBin = join(tempDir, "oci-cri");
-  if (!isNonEmptyFile(extractedBin)) {
-    throw new Error(`Extracted archive from ${releaseSpec.url} did not contain oci-cri`);
+    verifyArchiveSha256(
+      archivePath,
+      releaseSpec.sha256,
+      MAX_OCI_CRI_ARCHIVE_BYTES,
+    );
+    const extractedBin = extractAndValidateOciCriArchive(
+      archivePath,
+      tempDir,
+      MAX_OCI_CRI_BINARY_BYTES,
+    );
+    chmodSync(extractedBin, 0o755);
+    downloadedOciCriCache.set(ociCriArch, extractedBin);
+    return extractedBin;
+  } catch (err) {
+    rmSync(tempDir, { recursive: true, force: true });
+    throw err;
   }
-  chmodSync(extractedBin, 0o755);
-  downloadedOciCriCache.set(ociCriArch, extractedBin);
-  return extractedBin;
 }
 
 export interface StageOptions {
