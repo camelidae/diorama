@@ -14,18 +14,16 @@ bun add -g @diorama/cli
 
 ## Included Binaries
 
-Both executables are 100% statically linked (`aarch64-unknown-linux-musl`) and compressed with UPX (`--best --lzma`), requiring no host `glibc`:
+All executables are compressed with UPX (`--best --lzma`):
 
-- **`bin/diorama`**: Single-node Kubernetes distribution daemon compiled with `--features diorama/oci-cri` (embedded `oci-cri` container runtime, embedded MVCC/WAL datastore, API server, controller manager, kubelet, proxy, CoreDNS, and `local-path` storage).
+- **`bin/diorama`**: Ultra-lightweight (~8 MB) single-node Kubernetes distribution daemon (embedded MVCC/WAL datastore, API server, controller manager, kubelet, proxy, CoreDNS, and `local-path` storage).
 - **`bin/dioramactl`**: Operator CLI for host readiness checks (`check`), offline bundle installation (`install`), add-on management (`addon load`), upgrades (`upgrade`), and cleanup (`reset` / `uninstall`).
+- **`bin/oci-cri`**: Bundled CRI v1 container runtime (`geoffsee/oci-lib`) for zero-dependency execution over `/run/oci-cri/oci-cri.sock`.
 
 ## Programmatic Usage
 
 ```js
-import { getBinaryPath } from "@diorama/aarch64";
-
-const dioramaBin = getBinaryPath("diorama");
-const dioramactlBin = getBinaryPath("dioramactl");
+import { binDir, dioramaPath, dioramactlPath, ociCriPath } from "@diorama/aarch64";
 ```
 
 See [`@diorama/cli`](https://www.npmjs.com/package/@diorama/cli) and the [GitHub repository](https://github.com/geoffsee/diorama) for full CLI documentation.
