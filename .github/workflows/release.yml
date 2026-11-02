@@ -56,11 +56,9 @@ jobs:
       - name: Build static musl binaries and add-on installer
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev xz-utils
           rustup target add ${{ matrix.addon_target }}
-          CC=musl-gcc CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-            CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-            cargo build --locked --profile dist -p diorama -p dioramactl -p diorama-addon --target ${{ matrix.addon_target }}
+          bash container/build-static-musl.sh "${{ matrix.addon_target }}"
       - name: Prepare pinned offline runtime and image assets
         run: |
           assets_dir="$RUNNER_TEMP/release-assets"
