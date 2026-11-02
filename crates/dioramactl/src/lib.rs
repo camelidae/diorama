@@ -13,6 +13,7 @@ pub mod container_lifecycle;
 pub mod container_ports;
 pub mod contract;
 pub mod d2k;
+pub mod dash;
 mod docker_command;
 pub mod docker_engine;
 pub mod download;
@@ -102,9 +103,10 @@ pub trait CheckInputs {
 pub fn help(topic: HelpTopic) -> &'static str {
     match topic {
         HelpTopic::Addon => crate::addon::HELP,
+        HelpTopic::Dash => crate::dash::HELP,
         HelpTopic::Token => crate::token::HELP,
         HelpTopic::Root => {
-            "diorama Kube management commands\n\nUsage:\n  dioramactl [command]\n\nCommands:\n  addon       Load an offline add-on pack\n  check       Check host prerequisites\n  completion  Generate shell completion scripts\n  config      Manage diorama configuration\n  d2k         Manage Docker-to-Kubernetes (d2k) API translator\n  download    Download the binary bundle for offline installation\n  install     Install diorama and configure the system service\n  kubeconfig  Manage kubeconfig context and cluster access\n  reset       Reset cluster data and restart services\n  uninstall   Uninstall diorama and remove associated system resources\n  upgrade     Upgrade diorama to a different version\n  version     Print version information\n\nUse dioramactl [command] --help for more information about a command.\n"
+            "diorama Kube management commands\n\nUsage:\n  dioramactl [command]\n\nCommands:\n  addon       Load an offline add-on pack\n  check       Check host prerequisites\n  completion  Generate shell completion scripts\n  config      Manage diorama configuration\n  d2k         Manage Docker-to-Kubernetes (d2k) API translator\n  dash        Install and proxy the realtime node dashboard\n  download    Download the binary bundle for offline installation\n  install     Install diorama and configure the system service\n  kubeconfig  Manage kubeconfig context and cluster access\n  reset       Reset cluster data and restart services\n  uninstall   Uninstall diorama and remove associated system resources\n  upgrade     Upgrade diorama to a different version\n  version     Print version information\n\nUse dioramactl [command] --help for more information about a command.\n"
         },
         HelpTopic::Check => {
             "Check Linux host prerequisites; preparation requires explicit opt-in.\n\nUsage:\n  dioramactl check [flags]\n\nFlags:\n  -h, --help             Help for check\n      --install-prereqs  Install missing Alpine networking packages and enable its cgroups service\n      --pprof-server     Include pprof port 6060 in port checks\n"
@@ -223,6 +225,7 @@ pub fn execute_with_handler(
             Ok(0)
         },
         Ok(Command::Addon(options)) => crate::addon::execute(&options, stdout, stderr),
+        Ok(Command::Dash(options)) => crate::dash::execute(&options, stdout, stderr),
         Ok(Command::Token(options)) => crate::token::execute_token(&options, stdout, stderr),
         Ok(Command::Version) => {
             writeln!(stdout, "dioramactl {version}")?;

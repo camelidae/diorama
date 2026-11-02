@@ -23,6 +23,7 @@ pub enum HelpTopic {
     Kubeconfig,
     D2k,
     Addon,
+    Dash,
     Token,
 }
 
@@ -43,6 +44,7 @@ pub enum Command {
     Kubeconfig(KubeconfigOptions),
     D2k(D2kOptions),
     Addon(crate::addon::AddonOptions),
+    Dash(crate::dash::DashOptions),
     Token(crate::token::TokenOptions),
 }
 
@@ -113,6 +115,12 @@ pub fn parse_command(
             return Ok(Command::Help(HelpTopic::Addon));
         }
         return crate::addon::parse(&args[1..]).map(Command::Addon);
+    }
+    if args.first().map(String::as_str) == Some("dash") {
+        if args.iter().any(|a| a == "--help" || a == "-h") {
+            return Ok(Command::Help(HelpTopic::Dash));
+        }
+        return crate::dash::parse(&args[1..]).map(Command::Dash);
     }
     if args.first().map(String::as_str) == Some("token") {
         if args.len() == 1 || args.iter().any(|a| a == "--help" || a == "-h") {
@@ -546,6 +554,7 @@ pub fn parse_command(
             Some("kubeconfig") => Command::Help(HelpTopic::Kubeconfig),
             Some("d2k") => Command::Help(HelpTopic::D2k),
             Some("addon") => Command::Help(HelpTopic::Addon),
+            Some("dash") => Command::Help(HelpTopic::Dash),
             Some("token") => Command::Help(HelpTopic::Token),
             _ => Command::UnknownHelp,
         });
@@ -553,6 +562,7 @@ pub fn parse_command(
 
     Ok(match topic {
         HelpTopic::Addon => Command::Help(HelpTopic::Addon),
+        HelpTopic::Dash => Command::Help(HelpTopic::Dash),
         HelpTopic::Token => Command::Help(HelpTopic::Token),
         HelpTopic::Check => Command::Check(check_opts),
         HelpTopic::Version => Command::Version,
