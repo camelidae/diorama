@@ -997,6 +997,7 @@ async fn resolve_webhook_service(
     }
 }
 
+#[inline(never)]
 async fn send_webhook_http(
     target: WebhookTarget,
     ca_pem: Option<&str>,
@@ -1117,7 +1118,18 @@ async fn send_webhook_http(
     }
 }
 
-async fn dispatch_live_webhook(
+fn dispatch_live_webhook<'a>(
+    webhook: &'a WebhookDefinition,
+    req: &'a AdmissionRequest,
+    storage: Option<&'a KubernetesStorage>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<AdmissionResponse, ApiserverError>> + Send + 'a>,
+> {
+    Box::pin(dispatch_live_webhook_inner(webhook, req, storage))
+}
+
+#[inline(never)]
+async fn dispatch_live_webhook_inner(
     webhook: &WebhookDefinition,
     req: &AdmissionRequest,
     storage: Option<&KubernetesStorage>,
@@ -2622,117 +2634,75 @@ impl AdmissionEngine {
         self.params_cache.write().unwrap().clear();
     }
 
-    async fn sync_storage_policies(&self) {
+    fn sync_storage_policies(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(self.sync_storage_policies_inner())
+    }
+
+    #[inline(never)]
+    async fn sync_storage_policies_inner(&self) {
         let storage = self.storage.read().unwrap().clone();
         let Some(storage) = storage else {
             return;
         };
+        let pfx = storage.prefix();
 
-        for prefix in [
-            format!(
-                "{}/admissionregistration.k8s.io/mutatingadmissionpolicies/",
-                storage.prefix()
-            ),
-            format!("{}/mutatingadmissionpolicies/", storage.prefix()),
+        for (resource, kind) in [
+            ("mutatingadmissionpolicies", 0u8),
+            ("mutatingadmissionpolicybindings", 1),
+            ("validatingadmissionpolicies", 2),
+            ("validatingadmissionpolicybindings", 3),
+            ("mutatingwebhookconfigurations", 4),
+            ("validatingwebhookconfigurations", 5),
         ] {
-            if let Ok(kvs) = storage.list(&prefix).await {
+            for prefix in [
+                format!("{pfx}/admissionregistration.k8s.io/{resource}/"),
+                format!("{pfx}/{resource}/"),
+            ] {
+                let Ok(kvs) = storage.list(&prefix).await else {
+                    continue;
+                };
                 for kv in kvs {
-                    if let Ok(policy) = serde_json::from_slice::<MutatingAdmissionPolicy>(&kv.value)
-                    {
-                        self.add_mutating_admission_policy(policy);
-                    }
+                    self.ingest_synced_policy_kv(kind, &kv.value);
                 }
             }
         }
+    }
 
-        for prefix in [
-            format!(
-                "{}/admissionregistration.k8s.io/mutatingadmissionpolicybindings/",
-                storage.prefix()
-            ),
-            format!("{}/mutatingadmissionpolicybindings/", storage.prefix()),
-        ] {
-            if let Ok(kvs) = storage.list(&prefix).await {
-                for kv in kvs {
-                    if let Ok(binding) =
-                        serde_json::from_slice::<MutatingAdmissionPolicyBinding>(&kv.value)
-                    {
-                        self.add_mutating_admission_policy_binding(binding);
-                    }
+    #[inline(never)]
+    fn ingest_synced_policy_kv(&self, kind: u8, bytes: &[u8]) {
+        match kind {
+            0 => {
+                if let Ok(p) = serde_json::from_slice(bytes) {
+                    self.add_mutating_admission_policy(p);
                 }
-            }
-        }
-
-        for prefix in [
-            format!(
-                "{}/admissionregistration.k8s.io/validatingadmissionpolicies/",
-                storage.prefix()
-            ),
-            format!("{}/validatingadmissionpolicies/", storage.prefix()),
-        ] {
-            if let Ok(kvs) = storage.list(&prefix).await {
-                for kv in kvs {
-                    if let Ok(policy) =
-                        serde_json::from_slice::<ValidatingAdmissionPolicy>(&kv.value)
-                    {
-                        self.add_validating_admission_policy(policy);
-                    }
+            },
+            1 => {
+                if let Ok(b) = serde_json::from_slice(bytes) {
+                    self.add_mutating_admission_policy_binding(b);
                 }
-            }
-        }
-
-        for prefix in [
-            format!(
-                "{}/admissionregistration.k8s.io/validatingadmissionpolicybindings/",
-                storage.prefix()
-            ),
-            format!("{}/validatingadmissionpolicybindings/", storage.prefix()),
-        ] {
-            if let Ok(kvs) = storage.list(&prefix).await {
-                for kv in kvs {
-                    if let Ok(binding) =
-                        serde_json::from_slice::<ValidatingAdmissionPolicyBinding>(&kv.value)
-                    {
-                        self.add_validating_admission_policy_binding(binding);
-                    }
+            },
+            2 => {
+                if let Ok(p) = serde_json::from_slice(bytes) {
+                    self.add_validating_admission_policy(p);
                 }
-            }
-        }
-
-        for prefix in [
-            format!(
-                "{}/admissionregistration.k8s.io/mutatingwebhookconfigurations/",
-                storage.prefix()
-            ),
-            format!("{}/mutatingwebhookconfigurations/", storage.prefix()),
-        ] {
-            if let Ok(kvs) = storage.list(&prefix).await {
-                for kv in kvs {
-                    if let Ok(cfg) =
-                        serde_json::from_slice::<MutatingWebhookConfiguration>(&kv.value)
-                    {
-                        self.add_mutating_webhook_config(cfg);
-                    }
+            },
+            3 => {
+                if let Ok(b) = serde_json::from_slice(bytes) {
+                    self.add_validating_admission_policy_binding(b);
                 }
-            }
-        }
-
-        for prefix in [
-            format!(
-                "{}/admissionregistration.k8s.io/validatingwebhookconfigurations/",
-                storage.prefix()
-            ),
-            format!("{}/validatingwebhookconfigurations/", storage.prefix()),
-        ] {
-            if let Ok(kvs) = storage.list(&prefix).await {
-                for kv in kvs {
-                    if let Ok(cfg) =
-                        serde_json::from_slice::<ValidatingWebhookConfiguration>(&kv.value)
-                    {
-                        self.add_validating_webhook_config(cfg);
-                    }
+            },
+            4 => {
+                if let Ok(c) = serde_json::from_slice(bytes) {
+                    self.add_mutating_webhook_config(c);
                 }
-            }
+            },
+            _ => {
+                if let Ok(c) = serde_json::from_slice(bytes) {
+                    self.add_validating_webhook_config(c);
+                }
+            },
         }
     }
 
@@ -3213,7 +3183,16 @@ impl AdmissionEngine {
 
     /// Runs all matching mutating policies and webhooks against the admission request.
     /// Modifies `req.object` in place if patches are returned and applies defaults.
-    pub async fn run_mutating_admission(
+    pub fn run_mutating_admission<'a>(
+        &'a self,
+        req: &'a mut AdmissionRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ApiserverError>> + Send + 'a>>
+    {
+        Box::pin(self.run_mutating_admission_inner(req))
+    }
+
+    #[inline(never)]
+    async fn run_mutating_admission_inner(
         &self,
         req: &mut AdmissionRequest,
     ) -> Result<(), ApiserverError> {
@@ -3281,7 +3260,16 @@ impl AdmissionEngine {
     }
 
     /// Runs all matching validating policies and webhooks against the admission request.
-    pub async fn run_validating_admission(
+    pub fn run_validating_admission<'a>(
+        &'a self,
+        req: &'a AdmissionRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ApiserverError>> + Send + 'a>>
+    {
+        Box::pin(self.run_validating_admission_inner(req))
+    }
+
+    #[inline(never)]
+    async fn run_validating_admission_inner(
         &self,
         req: &AdmissionRequest,
     ) -> Result<(), ApiserverError> {
@@ -3347,126 +3335,7 @@ impl AdmissionEngine {
     ) -> Result<(), ApiserverError> {
         self.clear_configs();
         *self.storage.write().unwrap() = Some(storage.clone());
-
-        let mutating_prefix = format!("{}/mutatingwebhookconfigurations/", storage.prefix());
-        if let Ok(mutating_kvs) = storage.list(&mutating_prefix).await {
-            for kv in mutating_kvs {
-                if let Ok(config) =
-                    serde_json::from_slice::<MutatingWebhookConfiguration>(&kv.value)
-                {
-                    self.add_mutating_webhook_config(config);
-                }
-            }
-        }
-        let mutating_prefix_group = format!(
-            "{}/admissionregistration.k8s.io/mutatingwebhookconfigurations/",
-            storage.prefix()
-        );
-        if let Ok(mutating_kvs) = storage.list(&mutating_prefix_group).await {
-            for kv in mutating_kvs {
-                if let Ok(config) =
-                    serde_json::from_slice::<MutatingWebhookConfiguration>(&kv.value)
-                {
-                    self.add_mutating_webhook_config(config);
-                }
-            }
-        }
-
-        let validating_prefix = format!("{}/validatingwebhookconfigurations/", storage.prefix());
-        if let Ok(validating_kvs) = storage.list(&validating_prefix).await {
-            for kv in validating_kvs {
-                if let Ok(config) =
-                    serde_json::from_slice::<ValidatingWebhookConfiguration>(&kv.value)
-                {
-                    self.add_validating_webhook_config(config);
-                }
-            }
-        }
-        let validating_prefix_group = format!(
-            "{}/admissionregistration.k8s.io/validatingwebhookconfigurations/",
-            storage.prefix()
-        );
-        if let Ok(validating_kvs) = storage.list(&validating_prefix_group).await {
-            for kv in validating_kvs {
-                if let Ok(config) =
-                    serde_json::from_slice::<ValidatingWebhookConfiguration>(&kv.value)
-                {
-                    self.add_validating_webhook_config(config);
-                }
-            }
-        }
-
-        for prefix in [
-            format!(
-                "{}/admissionregistration.k8s.io/mutatingadmissionpolicies/",
-                storage.prefix()
-            ),
-            format!("{}/mutatingadmissionpolicies/", storage.prefix()),
-        ] {
-            if let Ok(map_kvs) = storage.list(&prefix).await {
-                for kv in map_kvs {
-                    if let Ok(policy) = serde_json::from_slice::<MutatingAdmissionPolicy>(&kv.value)
-                    {
-                        self.add_mutating_admission_policy(policy);
-                    }
-                }
-            }
-        }
-
-        for prefix in [
-            format!(
-                "{}/admissionregistration.k8s.io/mutatingadmissionpolicybindings/",
-                storage.prefix()
-            ),
-            format!("{}/mutatingadmissionpolicybindings/", storage.prefix()),
-        ] {
-            if let Ok(mapb_kvs) = storage.list(&prefix).await {
-                for kv in mapb_kvs {
-                    if let Ok(binding) =
-                        serde_json::from_slice::<MutatingAdmissionPolicyBinding>(&kv.value)
-                    {
-                        self.add_mutating_admission_policy_binding(binding);
-                    }
-                }
-            }
-        }
-
-        for prefix in [
-            format!(
-                "{}/admissionregistration.k8s.io/validatingadmissionpolicies/",
-                storage.prefix()
-            ),
-            format!("{}/validatingadmissionpolicies/", storage.prefix()),
-        ] {
-            if let Ok(vap_kvs) = storage.list(&prefix).await {
-                for kv in vap_kvs {
-                    if let Ok(policy) =
-                        serde_json::from_slice::<ValidatingAdmissionPolicy>(&kv.value)
-                    {
-                        self.add_validating_admission_policy(policy);
-                    }
-                }
-            }
-        }
-
-        for prefix in [
-            format!(
-                "{}/admissionregistration.k8s.io/validatingadmissionpolicybindings/",
-                storage.prefix()
-            ),
-            format!("{}/validatingadmissionpolicybindings/", storage.prefix()),
-        ] {
-            if let Ok(vapb_kvs) = storage.list(&prefix).await {
-                for kv in vapb_kvs {
-                    if let Ok(binding) =
-                        serde_json::from_slice::<ValidatingAdmissionPolicyBinding>(&kv.value)
-                    {
-                        self.add_validating_admission_policy_binding(binding);
-                    }
-                }
-            }
-        }
-
+        self.sync_storage_policies().await;
         Ok(())
     }
 }

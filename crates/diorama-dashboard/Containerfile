@@ -1,0 +1,5 @@
+FROM scratch
+COPY diorama-dashboard /diorama-dashboard
+EXPOSE 8080
+USER 65532:65532
+ENTRYPOINT ["/diorama-dashboard"]

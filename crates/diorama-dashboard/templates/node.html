@@ -1,0 +1,22 @@
+<section id="node-panel" class="card">
+  <div class="card-header">
+    <h2>Node: {{NODE_NAME}}</h2>
+    <span class="badge">{{NODE_SOURCE}}</span>
+  </div>
+  <div class="gauges">
+    <div class="gauge">
+      <div class="gauge-label">
+        <span>CPU</span>
+        <strong>{{CPU_PCT}}% ({{CPU_USED_M}}m / {{CPU_TOTAL_M}}m)</strong>
+      </div>
+      <meter min="0" max="100" low="60" high="85" optimum="25" value="{{CPU_PCT}}"></meter>
+    </div>
+    <div class="gauge">
+      <div class="gauge-label">
+        <span>Memory</span>
+        <strong>{{MEM_PCT}}% ({{MEM_USED_MIB}} MiB / {{MEM_TOTAL_MIB}} MiB)</strong>
+      </div>
+      <meter min="0" max="100" low="70" high="90" optimum="40" value="{{MEM_PCT}}"></meter>
+    </div>
+  </div>
+</section>
