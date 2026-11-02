@@ -180,7 +180,6 @@ export function buildRuntimeEnv(
  * @returns {never}
  */
 export function runBinary(binaryName, args = process.argv.slice(2)) {
-  const binaryPath = resolveBinaryPath(binaryName);
   const socketPath =
     process.env.DIORAMA_OCI_CRI_SOCKET || DEFAULT_OCI_CRI_SOCKET;
 
@@ -190,19 +189,23 @@ export function runBinary(binaryName, args = process.argv.slice(2)) {
   if (
     binaryName === "diorama" &&
     !isReadOnlyInvocation(args) &&
-    !hasExplicitRuntimeSelection(args, process.env) &&
-    !existsSync(socketPath)
+    !hasExplicitRuntimeSelection(args, process.env)
   ) {
+    validateCriSocketPath(socketPath);
     try {
-      const ociCriBin = resolveBinaryPath("oci-cri");
-      mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 });
-      ociCriProc = spawn(ociCriBin, ["serve", "--socket", socketPath], {
-        stdio: "ignore",
-      });
+      prepareCriSocketDirectory(socketPath);
+      if (!existsSync(socketPath)) {
+        const ociCriBin = resolveBinaryPath("oci-cri");
+        ociCriProc = spawn(ociCriBin, ["serve", "--socket", socketPath], {
+          stdio: "ignore",
+        });
+      }
     } catch {
       // Proceed and let diorama report the CRI readiness diagnostic if needed
     }
   }
+
+  const binaryPath = resolveBinaryPath(binaryName);
 
   try {
     const result = spawnSync(binaryPath, args, {
@@ -226,6 +229,196 @@ export function runBinary(binaryName, args = process.argv.slice(2)) {
       } catch {
         // Ignore cleanup errors
       }
+    }
+  }
+}
+
+const WORLD_WRITABLE_DIRECTORIES = Object.freeze([
+  "/tmp",
+  "/var/tmp",
+  "/dev/shm",
+  "/private/tmp",
+  "/private/var/tmp",
+]);
+
+/**
+ * Validates CRI Unix domain socket path for security constraints:
+ * - Must be an absolute path (rejects relative paths)
+ * - Must not be located inside world-writable temporary directories (/tmp, /var/tmp, /dev/shm)
+ * - Traverses ancestors and the socket path itself via lstatSync to reject symlinks (O_NOFOLLOW equivalent)
+ *
+ * @param {string} socketPath
+ * @param {{ fs?: typeof import("node:fs"); expectedUid?: number }} [options]
+ */
+export function validateCriSocketPath(socketPath, options = {}) {
+  if (typeof socketPath !== "string" || socketPath.trim().length === 0) {
+    throw new Error("CRI socket path must be a non-empty string");
+  }
+
+  if (!socketPath.startsWith("/")) {
+    throw new Error(`CRI socket path must be an absolute path: ${socketPath}`);
+  }
+
+  const normalized = resolve(socketPath);
+
+  for (const dir of WORLD_WRITABLE_DIRECTORIES) {
+    if (normalized === dir || normalized.startsWith(dir + "/")) {
+      throw new Error(
+        `CRI socket path cannot be located in world-writable directory: ${socketPath}`,
+      );
+    }
+  }
+
+  const fs = options.fs || process.getBuiltinModule("node:fs");
+
+  // Inspect socket path itself if it exists (O_NOFOLLOW check)
+  try {
+    const socketStat = fs.lstatSync(normalized);
+    if (socketStat.isSymbolicLink()) {
+      throw new Error(`CRI socket path cannot be a symlink: ${socketPath}`);
+    }
+  } catch (err) {
+    if (err && err.code !== "ENOENT") {
+      throw err;
+    }
+  }
+
+  // Inspect ancestor and parent directories for symlinks and world-writable bits
+  let current = dirname(normalized);
+  while (current && current !== "/" && current !== ".") {
+    if (
+      process.platform === "darwin" &&
+      (current === "/var" || current === "/etc")
+    ) {
+      break;
+    }
+    try {
+      const dirStat = fs.lstatSync(current);
+      if (dirStat.isSymbolicLink()) {
+        throw new Error(
+          `CRI socket parent directory component cannot be a symlink: ${current}`,
+        );
+      }
+      if ((dirStat.mode & 0o002) !== 0) {
+        throw new Error(
+          `CRI socket path cannot be located in world-writable directory: ${current}`,
+        );
+      }
+    } catch (err) {
+      if (err && err.code !== "ENOENT") {
+        throw err;
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+}
+
+/**
+ * Prepares and validates the parent directory and file permissions for a CRI Unix socket:
+ * - Validates path safety via validateCriSocketPath
+ * - Ensures parent directory is created with mode 0700
+ * - Verifies parent directory ownership (uid === expectedUid || uid === 0 when running as root)
+ * - Verifies parent directory permissions ((stat.mode & 0o022) === 0, no group/other write bits;
+ *   and (stat.mode & 0o077) === 0 after chmodSync(dir, 0o700))
+ * - If socket file already exists, verifies it is not a symlink, is owned by expectedUid / root,
+ *   and enforces mode 0600 (chmodSync(socketPath, 0o600))
+ *
+ * @param {string} socketPath
+ * @param {{ fs?: typeof import("node:fs"); expectedUid?: number; expectedSocketUid?: number }} [options]
+ */
+export function prepareCriSocketDirectory(socketPath, options = {}) {
+  validateCriSocketPath(socketPath, options);
+
+  const fs = options.fs || process.getBuiltinModule("node:fs");
+  const normalized = resolve(socketPath);
+  const dir = dirname(normalized);
+
+  const currentUid =
+    typeof process.getuid === "function" ? process.getuid() : 0;
+  const expectedUid =
+    options.expectedUid !== undefined ? options.expectedUid : currentUid;
+  const expectedSocketUid =
+    options.expectedSocketUid !== undefined
+      ? options.expectedSocketUid
+      : expectedUid;
+
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
+
+  const dirStat = fs.lstatSync(dir);
+  if (dirStat.isSymbolicLink()) {
+    throw new Error(`CRI socket parent directory cannot be a symlink: ${dir}`);
+  }
+
+  // Ownership verification
+  if (typeof dirStat.uid === "number") {
+    const isRootExpected = expectedUid === 0 || currentUid === 0;
+    if (isRootExpected && dirStat.uid !== 0) {
+      throw new Error(
+        `Insecure CRI socket parent directory ownership: uid is ${dirStat.uid}, expected root (0)`,
+      );
+    }
+    if (dirStat.uid !== expectedUid && dirStat.uid !== 0) {
+      throw new Error(
+        `Insecure CRI socket parent directory ownership: uid is ${dirStat.uid}, expected ${expectedUid} or 0`,
+      );
+    }
+  }
+
+  // Reject group-writable or other/world-writable permissions
+  if ((dirStat.mode & 0o022) !== 0) {
+    throw new Error(
+      `Insecure CRI socket parent directory permissions: ${dir} has group/other write permissions (mode 0o${(dirStat.mode & 0o777).toString(8)})`,
+    );
+  }
+
+  // Enforce mode 0700
+  fs.chmodSync(dir, 0o700);
+
+  const updatedDirStat = fs.lstatSync(dir);
+  if ((updatedDirStat.mode & 0o077) !== 0) {
+    throw new Error(
+      `Insecure CRI socket parent directory permissions: expected mode 0700 but got 0o${(updatedDirStat.mode & 0o777).toString(8)}`,
+    );
+  }
+
+  // If socket file already exists or after binding, verify via lstatSync and enforce mode 0600
+  try {
+    const socketStat = fs.lstatSync(socketPath);
+    if (socketStat.isSymbolicLink()) {
+      throw new Error(`CRI socket path cannot be a symlink: ${socketPath}`);
+    }
+
+    if (typeof socketStat.uid === "number") {
+      const isRootExpected = expectedSocketUid === 0 || currentUid === 0;
+      if (isRootExpected && socketStat.uid !== 0) {
+        throw new Error(
+          `Insecure CRI socket file ownership: uid is ${socketStat.uid}, expected root (0)`,
+        );
+      }
+      if (socketStat.uid !== expectedSocketUid && socketStat.uid !== 0) {
+        throw new Error(
+          `Insecure CRI socket file ownership: uid is ${socketStat.uid}, expected ${expectedSocketUid} or 0`,
+        );
+      }
+    }
+
+    fs.chmodSync(socketPath, 0o600);
+
+    const updatedSocketStat = fs.lstatSync(socketPath);
+    if ((updatedSocketStat.mode & 0o077) !== 0) {
+      throw new Error(
+        `Insecure CRI socket file permissions: expected mode 0600 but got 0o${(updatedSocketStat.mode & 0o777).toString(8)}`,
+      );
+    }
+  } catch (err) {
+    if (err && err.code !== "ENOENT") {
+      throw err;
     }
   }
 }
