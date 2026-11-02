@@ -13,6 +13,7 @@ export const DEFAULT_CONTAINER_RUNTIME_ENDPOINT = `unix://${DEFAULT_OCI_CRI_SOCK
 const READ_ONLY_FLAGS = new Set([
   "--version",
   "-v",
+  "-V",
   "--help",
   "-h",
   "--help-long",
@@ -232,57 +233,217 @@ export function resolveBinaryPath(
   );
 }
 
+function hasRuntimeInConfig(content) {
+  if (typeof content !== "string" || !content.trim()) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === "object") {
+      const rt = parsed.runtime;
+      if (typeof rt === "string" && rt.trim().length > 0) {
+        return true;
+      }
+      if (rt && typeof rt === "object") {
+        for (const key of ["endpoint", "backend", "runtime"]) {
+          if (typeof rt[key] === "string" && rt[key].trim().length > 0) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+  } catch {
+    // Fall back to YAML parsing
+  }
+
+  const lines = content.split(/\r?\n/);
+  let inRuntime = false;
+  let runtimeIndent = 0;
+
+  for (const rawLine of lines) {
+    const commentIdx = rawLine.indexOf("#");
+    const line = commentIdx >= 0 ? rawLine.slice(0, commentIdx) : rawLine;
+    if (!line.trim()) continue;
+
+    const runtimeHeader = line.match(/^(\s*)runtime\s*:(.*)$/);
+    if (runtimeHeader) {
+      runtimeIndent = runtimeHeader[1].length;
+      const inline = runtimeHeader[2].trim();
+      if (inline) {
+        if (inline.startsWith("{") && inline.endsWith("}")) {
+          const body = inline.slice(1, -1);
+          const m = body.match(
+            /(?:['"]?(?:endpoint|backend|runtime)['"]?)\s*:\s*([^,}\s]+|"[^"]*"|'[^']*')/,
+          );
+          if (m) {
+            const v = m[1].replace(/^['"]|['"]$/g, "").trim();
+            if (v && v !== "null" && v !== "~" && v !== '""' && v !== "''") {
+              return true;
+            }
+          }
+        } else {
+          const val = inline.replace(/^['"]|['"]$/g, "").trim();
+          if (val && val !== "null" && val !== "~") return true;
+        }
+      } else {
+        inRuntime = true;
+      }
+      continue;
+    }
+
+    if (inRuntime) {
+      const indentMatch = line.match(/^(\s*)(.*)$/);
+      const indent = indentMatch ? indentMatch[1].length : 0;
+      if (indent <= runtimeIndent) {
+        inRuntime = false;
+      } else {
+        const fieldMatch = line
+          .trim()
+          .match(/^(?:['"]?(?:endpoint|backend|runtime)['"]?)\s*:(.*)$/);
+        if (fieldMatch) {
+          const val = fieldMatch[1].trim().replace(/^['"]|['"]$/g, "").trim();
+          if (val && val !== "null" && val !== "~") {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function resolveConfigPath(args = [], env = process.env) {
+  if (args) {
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === "--") {
+        break;
+      }
+      if (arg.startsWith("--config=")) {
+        return arg.slice("--config=".length);
+      }
+      if (arg === "--config" && i + 1 < args.length) {
+        return args[i + 1];
+      }
+      if (arg.startsWith("-c=")) {
+        return arg.slice("-c=".length);
+      }
+      if (arg === "-c" && i + 1 < args.length) {
+        return args[i + 1];
+      }
+    }
+  }
+  if (
+    env &&
+    typeof env.DIORAMA_CONFIG === "string" &&
+    env.DIORAMA_CONFIG.trim().length > 0
+  ) {
+    return env.DIORAMA_CONFIG;
+  }
+  return null;
+}
+
+function configHasRuntimeSelection(args = [], env = process.env) {
+  const configPath = resolveConfigPath(args, env);
+  if (!configPath) return false;
+  try {
+    const fs =
+      typeof process.getBuiltinModule === "function"
+        ? process.getBuiltinModule("node:fs")
+        : require("node:fs");
+    if (fs && fs.existsSync(configPath)) {
+      const content = fs.readFileSync(configPath, "utf8");
+      return hasRuntimeInConfig(content);
+    }
+  } catch {
+    // Ignore read or parse errors
+  }
+  return false;
+}
+
 /**
  * Returns true if the CLI invocation only inspects version, help, or effective config
  * and must not start any background daemon or mutate host state.
  *
- * @param {readonly string[]} args
+ * @param {readonly string[]} [args]
  * @returns {boolean}
  */
-export function isReadOnlyInvocation(args) {
-  return args.some((arg) => READ_ONLY_FLAGS.has(arg));
+export function isReadOnlyInvocation(args = []) {
+  if (!args) return false;
+  for (const arg of args) {
+    if (arg === "--") {
+      break;
+    }
+    if (
+      READ_ONLY_FLAGS.has(arg) ||
+      arg === "--print-config" ||
+      arg.startsWith("--print-config=")
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
  * Returns true if the caller explicitly selected a container runtime or endpoint
- * via CLI flags or environment variables.
+ * via CLI flags, environment variables, or config file.
  *
- * @param {readonly string[]} args
+ * @param {readonly string[]} [args]
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {boolean}
  */
-export function hasExplicitRuntimeSelection(args, env = process.env) {
-  if (env.DIORAMA_CONTAINER_RUNTIME || env.DIORAMA_CONTAINER_RUNTIME_ENDPOINT) {
+export function hasExplicitRuntimeSelection(args = [], env = process.env) {
+  if (args) {
+    for (const arg of args) {
+      if (arg === "--") {
+        break;
+      }
+      if (
+        arg === "--container-runtime" ||
+        arg.startsWith("--container-runtime=") ||
+        arg === "--container-runtime-endpoint" ||
+        arg.startsWith("--container-runtime-endpoint=")
+      ) {
+        return true;
+      }
+    }
+  }
+  if (
+    env &&
+    (env.DIORAMA_CONTAINER_RUNTIME || env.DIORAMA_CONTAINER_RUNTIME_ENDPOINT)
+  ) {
     return true;
   }
-  return args.some(
-    (arg) =>
-      arg === "--container-runtime" ||
-      arg.startsWith("--container-runtime=") ||
-      arg === "--container-runtime-endpoint" ||
-      arg.startsWith("--container-runtime-endpoint="),
-  );
+  return configHasRuntimeSelection(args, env);
 }
 
 /**
  * Builds the environment for spawning a Diorama binary, defaulting
  * `DIORAMA_CONTAINER_RUNTIME_ENDPOINT` to `"unix:///run/oci-cri/oci-cri.sock"`
- * when launching `diorama` unless an explicit runtime or endpoint is set.
+ * when launching `diorama` unless a read-only flag is passed or an explicit
+ * runtime or endpoint is set via CLI flags, environment variables, or config file.
  *
  * @param {"diorama" | "dioramactl" | "oci-cri"} binaryName
  * @param {NodeJS.ProcessEnv} [baseEnv]
  * @param {string} [socketPath]
+ * @param {readonly string[]} [args]
  * @returns {NodeJS.ProcessEnv}
  */
 export function buildRuntimeEnv(
   binaryName,
   baseEnv = process.env,
   socketPath = DEFAULT_OCI_CRI_SOCKET,
+  args = typeof process !== "undefined" && process.argv
+    ? process.argv.slice(2)
+    : [],
 ) {
   if (
     binaryName === "diorama" &&
-    !baseEnv.DIORAMA_CONTAINER_RUNTIME &&
-    !baseEnv.DIORAMA_CONTAINER_RUNTIME_ENDPOINT
+    !isReadOnlyInvocation(args) &&
+    !hasExplicitRuntimeSelection(args, baseEnv)
   ) {
     return {
       ...baseEnv,
@@ -290,6 +451,33 @@ export function buildRuntimeEnv(
     };
   }
   return baseEnv;
+}
+
+/**
+ * Returns true if the CLI should automatically spawn the bundled `oci-cri` daemon.
+ *
+ * @param {string} binaryName
+ * @param {readonly string[]} [args]
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {boolean} [socketExists]
+ * @returns {boolean}
+ */
+export function shouldSpawnOciCri(
+  binaryName,
+  args = [],
+  env = process.env,
+  socketExists = false,
+) {
+  if (binaryName !== "diorama") {
+    return false;
+  }
+  if (isReadOnlyInvocation(args)) {
+    return false;
+  }
+  if (hasExplicitRuntimeSelection(args, env)) {
+    return false;
+  }
+  return !socketExists;
 }
 
 /**
