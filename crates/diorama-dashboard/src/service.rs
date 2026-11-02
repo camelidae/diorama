@@ -1,4 +1,6 @@
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -17,6 +19,7 @@ pub struct DashboardService {
     state: DashboardState,
     bound_http_addr: Arc<Mutex<Option<SocketAddr>>>,
     bound_h3_addr: Arc<Mutex<Option<SocketAddr>>>,
+    ephemeral_tls_dir: Arc<Mutex<Option<PathBuf>>>,
     shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
@@ -32,6 +35,7 @@ impl DashboardService {
             state,
             bound_http_addr: Arc::new(Mutex::new(None)),
             bound_h3_addr: Arc::new(Mutex::new(None)),
+            ephemeral_tls_dir: Arc::new(Mutex::new(None)),
             shutdown_tx: Arc::new(shutdown_tx),
         }
     }
@@ -113,6 +117,23 @@ impl DashboardService {
     /// Signals all dashboard background tasks and listeners to shut down cleanly.
     pub fn stop(&self) {
         let _ = self.shutdown_tx.send(true);
+        if let Some(dir) = self
+            .ephemeral_tls_dir
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        let env_dir =
+            std::env::temp_dir().join(format!("diorama-dashboard-tls-{}", std::process::id()));
+        if env_dir.exists() {
+            let _ = std::fs::remove_dir_all(&env_dir);
+        }
+        let tmp_dir = PathBuf::from(format!("/tmp/diorama-dashboard-tls-{}", std::process::id()));
+        if tmp_dir.exists() {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+        }
     }
 
     fn ensure_tls_files(&self) -> Result<(PathBuf, PathBuf)> {
@@ -126,6 +147,13 @@ impl DashboardService {
         let dir =
             std::env::temp_dir().join(format!("diorama-dashboard-tls-{}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|e| DashboardError::TlsMaterial(e.to_string()))?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| DashboardError::TlsMaterial(e.to_string()))?;
+        *self
+            .ephemeral_tls_dir
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(dir.clone());
         let cert_path = dir.join("cert.pem");
         let key_path = dir.join("key.pem");
         if !cert_path.is_file() || !key_path.is_file() {
@@ -139,6 +167,9 @@ impl DashboardService {
             std::fs::write(&key_path, certified.signing_key.serialize_pem())
                 .map_err(|e| DashboardError::TlsMaterial(e.to_string()))?;
         }
+        #[cfg(unix)]
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| DashboardError::TlsMaterial(e.to_string()))?;
         Ok((cert_path, key_path))
     }
 }

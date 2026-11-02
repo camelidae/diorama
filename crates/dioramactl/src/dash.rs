@@ -315,7 +315,7 @@ fn open_datastore_client(data_dir: &Path) -> Result<DatastoreClient, DatastoreEr
     match DatastoreEngine::open(DatastoreConfig::new(ds_dir)) {
         Ok((engine, _)) => Ok(engine.client()),
         Err(DatastoreError::LockContention(_)) => {
-            let peer: SocketAddr = "127.0.0.1:2380".parse().unwrap();
+            let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 2380);
             Ok(DatastoreClient::new_remote(
                 peer,
                 Some(pki_dir.join("datastore-server.crt")),

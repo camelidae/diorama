@@ -166,3 +166,34 @@ async fn dashboard_adapter_runs_under_supervisor_and_stops_cleanly() {
     let report = sup_task.await.expect("supervisor join");
     assert_eq!(report.failures.len(), 0);
 }
+
+#[tokio::test]
+async fn dashboard_tls_ephemeral_material_permissions_and_cleanup() {
+    let service = DashboardService::new(ephemeral_config(), None);
+    service.start().await.expect("dashboard start");
+
+    let ephemeral_dir =
+        std::env::temp_dir().join(format!("diorama-dashboard-tls-{}", std::process::id()));
+    assert!(ephemeral_dir.is_dir());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let dir_mode = std::fs::metadata(&ephemeral_dir)
+            .expect("metadata dir")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+
+        let key_mode = std::fs::metadata(ephemeral_dir.join("key.pem"))
+            .expect("metadata key")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(key_mode, 0o600);
+    }
+
+    service.stop();
+    assert!(!ephemeral_dir.exists());
+}
