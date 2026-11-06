@@ -1012,7 +1012,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(rejected.to_string().contains("zwasm"));
-        assert!(adapter.list_pod_sandbox(None).await.unwrap().is_empty());
+        assert_eq!(adapter.list_pod_sandbox(None).await.unwrap().len(), 0);
         let sandbox_id = adapter.run_pod_sandbox(&sandbox, "").await.unwrap();
         assert_eq!(sandbox_id, "pod1");
         let listed = adapter.list_pod_sandbox(None).await.unwrap();
