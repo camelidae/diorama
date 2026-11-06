@@ -579,7 +579,7 @@ impl RbacAuthorizer {
         map.insert(role.name.clone(), role);
     }
 
-    /// Puts the node RuntimeClass read back after storage replaces the seed.
+    /// Puts the node `RuntimeClass` read back after storage replaces the seed.
     ///
     /// A stored `system:node` role overwrites the in-memory bootstrap role on
     /// startup. Custom rules stay. The read is added only when no stored rule
@@ -1126,6 +1126,24 @@ mod tests {
             resource_name: Some("zwasm"),
         }));
 
+        // Works with implicit group matching when groups is empty
+        assert!(authorizer.authorize(&AuthzRequest {
+            username: node_user,
+            groups: &[],
+            verb: "create",
+            api_group: "authentication.k8s.io",
+            resource: "tokenreviews",
+            namespace: None,
+            resource_name: None,
+        }));
+    }
+
+    #[test]
+    fn stored_node_role_keeps_custom_rules_and_gains_runtime_class_read() {
+        let authorizer = RbacAuthorizer::new();
+        let groups = ["system:nodes".to_string()];
+        let node_user = "system:node:worker-1";
+
         authorizer.add_cluster_role(ClusterRole {
             name: "system:node".to_string(),
             rules: vec![PolicyRule {
@@ -1156,10 +1174,14 @@ mod tests {
             resource_name: Some("wasmer"),
         }));
         authorizer.retain_node_runtime_class_read();
-        let stored = authorizer
-            .get_cluster_role("system:node")
-            .expect("system:node");
-        assert_eq!(stored.rules.len(), 2);
+        assert_eq!(
+            authorizer
+                .get_cluster_role("system:node")
+                .expect("system:node")
+                .rules
+                .len(),
+            2
+        );
 
         authorizer.add_cluster_role(ClusterRole {
             name: "system:node".to_string(),
@@ -1180,17 +1202,6 @@ mod tests {
                 .len(),
             1
         );
-
-        // Works with implicit group matching when groups is empty
-        assert!(authorizer.authorize(&AuthzRequest {
-            username: node_user,
-            groups: &[],
-            verb: "create",
-            api_group: "authentication.k8s.io",
-            resource: "tokenreviews",
-            namespace: None,
-            resource_name: None,
-        }));
     }
 
     #[test]
