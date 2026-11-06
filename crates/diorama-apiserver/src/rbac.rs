@@ -326,6 +326,13 @@ impl RbacAuthorizer {
                 },
                 PolicyRule {
                     verbs: vec!["get".to_string()],
+                    api_groups: vec!["node.k8s.io".to_string()],
+                    resources: vec!["runtimeclasses".to_string()],
+                    resource_names: Vec::new(),
+                    non_resource_urls: Vec::new(),
+                },
+                PolicyRule {
+                    verbs: vec!["get".to_string()],
                     api_groups: vec![String::new()],
                     resources: vec![
                         "secrets".to_string(),
@@ -1074,6 +1081,25 @@ mod tests {
             resource: "serviceaccounts/token",
             namespace: Some("default"),
             resource_name: Some("default"),
+        }));
+
+        assert!(authorizer.authorize(&AuthzRequest {
+            username: node_user,
+            groups: &groups,
+            verb: "get",
+            api_group: "node.k8s.io",
+            resource: "runtimeclasses",
+            namespace: None,
+            resource_name: Some("zwasm"),
+        }));
+        assert!(!authorizer.authorize(&AuthzRequest {
+            username: node_user,
+            groups: &groups,
+            verb: "delete",
+            api_group: "node.k8s.io",
+            resource: "runtimeclasses",
+            namespace: None,
+            resource_name: Some("zwasm"),
         }));
 
         // Works with implicit group matching when groups is empty
