@@ -410,7 +410,8 @@ impl ApiserverService {
             }
         }
 
-        // A stored system:node role replaces the seed. Keep the RuntimeClass read.
+        // A stored system:node role replaces the seed. Writes of that role keep
+        // the RuntimeClass read as well, inside add_cluster_role.
         self.rbac.retain_node_runtime_class_read();
 
         Ok(())
