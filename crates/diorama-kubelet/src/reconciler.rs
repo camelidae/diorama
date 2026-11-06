@@ -1099,6 +1099,18 @@ fn sandbox_config_base(pod: &Value, attempt: u32) -> cri::PodSandboxConfig {
     config
 }
 
+fn handler_from_runtime_class(name: &str, class: &Value) -> Result<String, KubeletError> {
+    class
+        .pointer("/handler")
+        .and_then(Value::as_str)
+        .filter(|handler| !handler.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| KubeletError::PodReconciliationFailed {
+            pod: name.to_string(),
+            reason: format!("RuntimeClass \"{name}\" has an empty handler"),
+        })
+}
+
 fn pod_bool(pod: &Value, field: &str) -> bool {
     pod.pointer(&format!("/spec/{field}"))
         .and_then(Value::as_bool)
@@ -3995,6 +4007,23 @@ impl PodReconciler {
         Ok(statuses)
     }
 
+    /// Resolves `spec.runtimeClassName` to the CRI handler. No class keeps the
+    /// runtime default.
+    async fn runtime_handler_for(&self, pod: &Value) -> Result<String, KubeletError> {
+        let Some(name) = pod
+            .pointer("/spec/runtimeClassName")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+        else {
+            return Ok(String::new());
+        };
+        let class = self
+            .client
+            .get_cluster_object("node.k8s.io", "runtimeclasses", name)
+            .await?;
+        handler_from_runtime_class(name, &class)
+    }
+
     /// Finds the pod's ready sandbox or creates one, removing stale sandboxes.
     async fn ensure_sandbox(
         &self,
@@ -4029,7 +4058,8 @@ impl PodReconciler {
         }
         let mut config =
             sandbox_config_with_dns(pod, attempt, &self.cluster_dns, &self.cluster_domain);
-        let id = match self.runtime.run_pod_sandbox(&config).await {
+        let handler = self.runtime_handler_for(pod).await?;
+        let id = match self.runtime.run_pod_sandbox(&config, &handler).await {
             Ok(id) => id,
             Err(e) => {
                 let has_sysctls = config.linux.as_ref().is_some_and(|l| !l.sysctls.is_empty());
@@ -4037,7 +4067,7 @@ impl PodReconciler {
                     if let Some(linux) = config.linux.as_mut() {
                         linux.sysctls.clear();
                     }
-                    self.runtime.run_pod_sandbox(&config).await?
+                    self.runtime.run_pod_sandbox(&config, &handler).await?
                 } else {
                     return Err(e);
                 }
@@ -7159,6 +7189,16 @@ fn dead_container_views<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_class_handler_is_zwasm_or_absent() {
+        assert_eq!(
+            handler_from_runtime_class("zwasm", &json!({"handler": "zwasm"})).unwrap(),
+            "zwasm"
+        );
+        let err = handler_from_runtime_class("zwasm", &json!({})).unwrap_err();
+        assert!(err.to_string().contains("empty handler"));
+    }
 
     #[test]
     fn pod_has_service_account_token_custom_projected_tokens() {

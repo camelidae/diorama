@@ -4,13 +4,15 @@ An in-process `oci-cri` adapter for diorama's supervisor. The existing
 `diorama-cri` client remains the protocol boundary for kubelet workloads.
 
 The runtime is pinned to upstream commit
-`5f4872c4b12ac962d624e1f756784116a900beae`, which contains
+`a06a7a7689dfc2741550b4bf4ab8837469c51956`, which contains
 [the native fixes](https://github.com/geoffsee/oci-lib/pull/21) and
 [the embedding API](https://github.com/geoffsee/oci-lib/pull/22).
 It also includes [managed pod fixes](https://github.com/geoffsee/oci-lib/pull/23),
 [native conformance and security fixes](https://github.com/geoffsee/oci-lib/pull/24),
-and [short image-name resolution](https://github.com/geoffsee/oci-lib/pull/26).
-A sibling checkout is no longer required.
+[short image-name resolution](https://github.com/geoffsee/oci-lib/pull/26),
+and [the optional preview1 WASI handler](https://github.com/geoffsee/oci-lib/pull/28).
+Container args replace the image command before WASM classification, matching native create ([oci-lib#30](https://github.com/geoffsee/oci-lib/pull/30)).
+Diorama does not enable the `zwasm` feature. A sibling checkout is no longer required.
 
 ## External runtime
 
