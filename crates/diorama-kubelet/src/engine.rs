@@ -458,6 +458,7 @@ impl RuntimeProvider for EngineRuntimeAdapter {
     async fn run_pod_sandbox(
         &self,
         config: &cri::PodSandboxConfig,
+        _runtime_handler: &str,
     ) -> Result<String, KubeletError> {
         let default_meta = cri::PodSandboxMetadata::default();
         let meta = config.metadata.as_ref().unwrap_or(&default_meta);
@@ -993,7 +994,7 @@ mod tests {
         assert_eq!(adapter.runtime_version(), "9.9");
 
         let sandbox = sandbox_config();
-        let sandbox_id = adapter.run_pod_sandbox(&sandbox).await.unwrap();
+        let sandbox_id = adapter.run_pod_sandbox(&sandbox, "").await.unwrap();
         assert_eq!(sandbox_id, "pod1");
         let listed = adapter.list_pod_sandbox(None).await.unwrap();
         assert_eq!(listed.len(), 1);
