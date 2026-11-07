@@ -39,7 +39,7 @@ describe("@diorama/publisher-cli build & publish helper", () => {
   });
 
   test("pins oci-lib release URLs and SHA-256 digests", () => {
-    expect(OCI_LIB_VERSION).toBe("v0.1.14");
+    expect(OCI_LIB_VERSION).toBe("v0.1.15");
     expect(MAX_OCI_CRI_ARCHIVE_BYTES).toBe(64 * 1024 * 1024);
     expect(MAX_OCI_CRI_BINARY_BYTES).toBe(128 * 1024 * 1024);
     expect(ALLOWED_OCI_LIB_RELEASE_PREFIX).toBe(

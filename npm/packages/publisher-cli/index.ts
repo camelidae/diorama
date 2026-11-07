@@ -30,7 +30,7 @@ export interface ArchTargetSpec {
 const NPM_ROOT = resolve(import.meta.dirname, "../..");
 const REPO_ROOT = resolve(NPM_ROOT, "..");
 
-export const OCI_LIB_VERSION = "v0.1.14";
+export const OCI_LIB_VERSION = "v0.1.15";
 export const MAX_OCI_CRI_ARCHIVE_BYTES = 64 * 1024 * 1024;
 export const MAX_OCI_CRI_BINARY_BYTES = 128 * 1024 * 1024;
 export const ALLOWED_OCI_LIB_RELEASE_PREFIX =
@@ -66,11 +66,11 @@ export const OCI_CRI_RELEASES: Readonly<
 > = {
   amd64: {
     url: `https://github.com/geoffsee/oci-lib/releases/download/${OCI_LIB_VERSION}/oci-cri-${OCI_LIB_VERSION}-x86_64-unknown-linux-gnu.tar.gz`,
-    sha256: "0e2b24dcfb36caf413fc1a390c32652f580d99a45fe6239959de887f506601d9",
+    sha256: "f32f1e094046e5739aac91ad445b7c7e2ebdb376ebee2a7254d3d6c4941958b5",
   },
   arm64: {
     url: `https://github.com/geoffsee/oci-lib/releases/download/${OCI_LIB_VERSION}/oci-cri-${OCI_LIB_VERSION}-aarch64-unknown-linux-gnu.tar.gz`,
-    sha256: "391e867c06fd9b2b1c344e9bd9f11c5758499786e58f12755dc0f570460a75b6",
+    sha256: "789dcb034eef0e2a2e75f4c4cf6659894db112040050da157a9b11532c88979c",
   },
 };
 
