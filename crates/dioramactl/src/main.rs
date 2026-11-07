@@ -67,6 +67,15 @@ fn main() -> std::process::ExitCode {
         let _ = writeln!(io::stderr(), "error: command arguments must be UTF-8");
         return std::process::ExitCode::FAILURE;
     };
+    if args.first().is_some_and(|arg| arg == "vm") {
+        return match dioramactl::vm::run(&args[1..]) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                let _ = writeln!(io::stderr(), "error: {error}");
+                std::process::ExitCode::FAILURE
+            },
+        };
+    }
     let mut environment = BTreeMap::new();
     for (key, value) in std::env::vars_os() {
         let Ok(key) = key.into_string() else { continue };

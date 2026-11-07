@@ -55,7 +55,34 @@ make container-run
 `make image` builds a Linux musl binary on the host. To compile inside a container
 instead, use `make image-source`, which uses
 [Dockerfile.source](../container/Dockerfile.source). macOS can be used for source
-builds and tests; running a node requires a Linux environment.
+builds and tests. For a local macOS VM development build, see below; ClusterIP
+Service routing still requires kube-proxy on a Linux node.
+
+## macOS VM development build
+
+On macOS, `make macos-release` builds `dist/macos/diorama` and its companion
+`dist/macos/dioramactl`. The VM guest is embedded in `dioramactl`, and the two
+executables must remain side by side. Start the node with no arguments and check
+the VM prerequisites with:
+
+```sh
+dist/macos/diorama
+dist/macos/dioramactl vm diagnose
+```
+
+The helper is supervised and shut down on a normal `diorama` exit. Force-killing
+`diorama` can leave the helper and VM running; a later start may launch another
+guest while the earlier helper remains alive. This development runtime hosts the
+CRI guest, not the whole node. The guest configures bridge CNI in a quarter of
+its NAT IPv4 subnet, excluding the quarter containing its own address, and
+enables proxy ARP so the Mac can reach pod IPs without host routes. Exec, attach,
+and other CRI streaming URLs bind the guest's NAT-facing address, so they are
+reachable from the Mac without host-side rewriting; `kubectl exec` is verified.
+`kubectl port-forward` remains unavailable because the API server currently
+rejects the upgrade protocol used by the installed `kubectl`, before it reaches
+the guest. This is a single-guest development setup: the selected pod range can
+overlap addresses allocated by vmnet DHCP, and ClusterIP Services still need
+kube-proxy inside Linux.
 
 After the node has created its credentials, export the kubeconfig and inspect it
 with an installed `kubectl`:

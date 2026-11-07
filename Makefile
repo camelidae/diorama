@@ -11,7 +11,7 @@ KUBECONFIG_OUT ?= kubeconfig.yaml
 IGNOREFILE_FLAG := $(if $(findstring podman,$(CONTAINER_ENGINE)),--ignorefile container/.dockerignore,)
 MODULES_MOUNT := $(if $(wildcard /lib/modules),-v /lib/modules:/lib/modules:ro,)
 
-.PHONY: help build fmt fmt-check lint test test-doc policy deny check \
+.PHONY: help build macos-release fmt fmt-check lint test test-doc policy deny check \
 	image dev-image image-source container-run container-stop kubeconfig \
 	conformance clean
 
@@ -21,6 +21,7 @@ help:
 		"" \
 		"Workspace targets:" \
 		"  build          Build diorama and dioramactl" \
+		"  macos-release  Build macOS diorama and dioramactl binaries with the VM in dioramactl" \
 		"  fmt            Format all workspace Rust sources" \
 		"  fmt-check      Check formatting without modifying files" \
 		"  lint           Run workspace Clippy lints" \
@@ -41,6 +42,12 @@ help:
 
 build:
 	CARGO_PROFILE_DEV_CODEGEN_BACKEND=llvm cargo build --locked -p diorama -p dioramactl
+
+macos-release:
+	cargo build --locked --profile dist -p diorama -p dioramactl
+	mkdir -p dist/macos
+	cp target/dist/diorama dist/macos/diorama
+	cp target/dist/dioramactl dist/macos/dioramactl
 
 fmt:
 	cargo fmt --all

@@ -1,5 +1,5 @@
 //! Supervised, in-process oci-cri runtime. Call [`startup`] at the executable
-//! entry point before creating threads. The native engine requires Linux.
+//! entry point before creating threads. Linux links the native engine.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,9 +60,10 @@ impl OciCriService {
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = (self.config, shutdown);
             Err(oci_cri::Error::new(
                 oci_cri::ErrorCode::Unsupported,
-                "managed oci-cri requires Linux",
+                "in-process oci-cri requires Linux",
                 "",
             ))
         }

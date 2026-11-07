@@ -1,5 +1,7 @@
 //! Startup-only command adapter. Configuration and host IO are injected independently.
 mod parse;
+#[cfg(target_os = "macos")]
+mod vm_runtime;
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};

@@ -1,7 +1,8 @@
 # diorama-oci
 
-An in-process `oci-cri` adapter for diorama's supervisor. The existing
-`diorama-cri` client remains the protocol boundary for kubelet workloads.
+An in-process Linux `oci-cri` adapter for diorama's supervisor. The existing
+`diorama-cri` client remains the protocol boundary for kubelet workloads. The
+macOS VM runtime is hosted separately by `dioramactl`, not linked into `diorama`.
 
 The runtime is pinned to upstream tag `v0.1.15` (commit
 `9e2140c330e58d4249321b41ad2b2e98ebbc83e9`), which contains
@@ -13,7 +14,7 @@ It also includes [managed pod fixes](https://github.com/geoffsee/oci-lib/pull/23
 [the optional preview1 WASI handler](https://github.com/geoffsee/oci-lib/pull/28),
 container args before WASM classification ([oci-lib#30](https://github.com/geoffsee/oci-lib/pull/30)),
 and the WASI 0.3 `oci-wasip3` runner ([oci-lib#32](https://github.com/geoffsee/oci-lib/pull/32)).
-A sibling checkout is no longer required.
+This checkout resolves oci-lib from the sibling `../oci-lib` path.
 
 ## External runtime
 
