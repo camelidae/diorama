@@ -151,14 +151,8 @@ pub trait RuntimeProvider: std::fmt::Debug + Send + Sync {
     // --- RuntimeService: sandboxes ---
 
     /// Creates and starts a pod sandbox; returns its id.
-    ///
-    /// `runtime_handler` is the CRI handler from `RuntimeClass.handler`.
-    /// An empty string selects the runtime's default, which is native containers.
-    async fn run_pod_sandbox(
-        &self,
-        config: &cri::PodSandboxConfig,
-        runtime_handler: &str,
-    ) -> Result<String, KubeletError>;
+    async fn run_pod_sandbox(&self, config: &cri::PodSandboxConfig)
+    -> Result<String, KubeletError>;
 
     /// Stops the sandbox and every container in it.
     async fn stop_pod_sandbox(&self, pod_sandbox_id: &str) -> Result<(), KubeletError>;

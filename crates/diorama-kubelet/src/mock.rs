@@ -21,7 +21,6 @@ struct SandboxRecord {
     config: cri::PodSandboxConfig,
     state: cri::PodSandboxState,
     created_at: i64,
-    runtime_handler: String,
 }
 
 #[derive(Debug, Clone)]
@@ -291,7 +290,6 @@ impl RuntimeProvider for MockRuntimeProvider {
     async fn run_pod_sandbox(
         &self,
         config: &cri::PodSandboxConfig,
-        runtime_handler: &str,
     ) -> Result<String, KubeletError> {
         let id = self.next("sb");
         self.lock().sandboxes.insert(
@@ -300,7 +298,6 @@ impl RuntimeProvider for MockRuntimeProvider {
                 config: config.clone(),
                 state: cri::PodSandboxState::SandboxReady,
                 created_at: now_nanos(),
-                runtime_handler: runtime_handler.to_string(),
             },
         );
         Ok(id)
@@ -357,7 +354,7 @@ impl RuntimeProvider for MockRuntimeProvider {
                 created_at: s.created_at,
                 labels: s.config.labels.clone(),
                 annotations: s.config.annotations.clone(),
-                runtime_handler: s.runtime_handler.clone(),
+                runtime_handler: String::new(),
             })
             .collect())
     }
@@ -380,7 +377,7 @@ impl RuntimeProvider for MockRuntimeProvider {
             linux: None,
             labels: sandbox.config.labels.clone(),
             annotations: sandbox.config.annotations.clone(),
-            runtime_handler: sandbox.runtime_handler.clone(),
+            runtime_handler: String::new(),
         })
     }
 

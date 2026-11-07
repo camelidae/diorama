@@ -188,11 +188,7 @@ impl dioramalet::RuntimeProvider for RealCriMock {
     fn requires_socket(&self) -> bool {
         true
     }
-    async fn run_pod_sandbox(
-        &self,
-        _c: &cri::PodSandboxConfig,
-        _runtime_handler: &str,
-    ) -> Result<String, KubeletError> {
+    async fn run_pod_sandbox(&self, _c: &cri::PodSandboxConfig) -> Result<String, KubeletError> {
         Ok("sandbox".to_string())
     }
     async fn stop_pod_sandbox(&self, _id: &str) -> Result<(), KubeletError> {
