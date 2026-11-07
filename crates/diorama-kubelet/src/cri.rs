@@ -157,11 +157,12 @@ impl RuntimeProvider for CriRuntimeProvider {
     async fn run_pod_sandbox(
         &self,
         config: &cri::PodSandboxConfig,
+        runtime_handler: &str,
     ) -> Result<String, KubeletError> {
         let mut client = self.client().await?;
         let req = cri::RunPodSandboxRequest {
             config: Some(config.clone()),
-            runtime_handler: String::new(),
+            runtime_handler: runtime_handler.to_string(),
         };
         client
             .run_pod_sandbox(req)

@@ -458,7 +458,21 @@ impl RuntimeProvider for EngineRuntimeAdapter {
     async fn run_pod_sandbox(
         &self,
         config: &cri::PodSandboxConfig,
+        runtime_handler: &str,
     ) -> Result<String, KubeletError> {
+        if !runtime_handler.is_empty() {
+            let pod = config
+                .metadata
+                .as_ref()
+                .map(|meta| meta.name.clone())
+                .unwrap_or_default();
+            return Err(KubeletError::PodReconciliationFailed {
+                pod,
+                reason: format!(
+                    "runtime handler \"{runtime_handler}\" is not supported by this engine"
+                ),
+            });
+        }
         let default_meta = cri::PodSandboxMetadata::default();
         let meta = config.metadata.as_ref().unwrap_or(&default_meta);
         let mut labels = config.labels.clone();
@@ -993,7 +1007,13 @@ mod tests {
         assert_eq!(adapter.runtime_version(), "9.9");
 
         let sandbox = sandbox_config();
-        let sandbox_id = adapter.run_pod_sandbox(&sandbox).await.unwrap();
+        let rejected = adapter
+            .run_pod_sandbox(&sandbox, "zwasm")
+            .await
+            .unwrap_err();
+        assert!(rejected.to_string().contains("zwasm"));
+        assert_eq!(adapter.list_pod_sandbox(None).await.unwrap().len(), 0);
+        let sandbox_id = adapter.run_pod_sandbox(&sandbox, "").await.unwrap();
         assert_eq!(sandbox_id, "pod1");
         let listed = adapter.list_pod_sandbox(None).await.unwrap();
         assert_eq!(listed.len(), 1);
