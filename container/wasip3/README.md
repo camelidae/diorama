@@ -143,14 +143,14 @@ worth running in CI or on a machine with spare Podman disk.
 
 ## Release coupling (unpublished)
 
-Nothing in **published** `geoffsee/oci-lib@v0.1.14` includes this WASI work.
+**Published** `geoffsee/oci-lib@v0.1.15` includes the WASI 0.3 runner and `wasmtime` handler.
 The guest runner, `wasmtime.toml`, and CRI handler plumbing live only on branch
 `feat/wasip3-runtime-plugin` in the oci-lib worktree until that branch is tagged.
 
 | Artifact / path | Needs WASI changes from oci-lib? | Notes |
 | --- | --- | --- |
-| Diorama `diorama-oci` git pin (`crates/diorama-oci/Cargo.toml`) | yes — bump to the new oci-lib tag rev after release | Worktree still pins `0.1.13` / `5f4872c`; main checkout may pin `0.1.14` — neither includes P3 |
-| npm `OCI_LIB_VERSION` / publisher downloads | yes | v0.1.14 tarballs lack `oci-wasip3` and `wasmtime.toml` until a new release |
+| Diorama `diorama-oci` git pin (`crates/diorama-oci/Cargo.toml`) | done on bump branch | `v0.1.15` / `9e2140c330e58d4249321b41ad2b2e98ebbc83e9` |
+| npm `OCI_LIB_VERSION` / publisher downloads | done on bump branch | `v0.1.15` tarballs ship `oci-wasip3` and `wasmtime.toml` |
 | macOS BusyBox guest (`cargo xtask guest oci-cri`) | yes | Rebuild after oci-lib release; do not ship an older guest archive |
 | Linux npm bundles (`@diorama/*`) | yes for optional bundled `oci-cri` | Same new oci-lib release |
 | Diorama offline Linux bundles | no oci-lib crate dependency | `containerd-shim-wasmtime-v1`, `ctr`, patched containerd built from this repo’s `container/wasip3/` scripts |
