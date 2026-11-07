@@ -1170,8 +1170,9 @@ fn assemble_worker_runtime(
             is_container,
             proxy_mode,
         );
-        builder = builder
-            .register_proxy(ProxyService::new(proxy_opts).with_client(Arc::new(admin_client)));
+        builder = builder.register_proxy(
+            ProxyService::new(proxy_opts).with_client(Arc::new(admin_client.clone())),
+        );
 
         let kubelet_dir = state_dir.join("kubelet");
         std::fs::create_dir_all(&kubelet_dir)?;
@@ -1183,6 +1184,13 @@ fn assemble_worker_runtime(
         );
         kubelet_opts.runtime_endpoint = format!("unix://{}", socket_path.display());
         kubelet_opts.container_mode = is_container;
+        let timeout = builder.policy.startup_timeout();
+        builder = builder.register_component(crate::runtime_class::registration(
+            socket_path.clone(),
+            admin_client.clone(),
+            vec![runtime_id.to_string()],
+            timeout,
+        ));
         let runtime_provider: Arc<dyn RuntimeProvider> =
             Arc::new(CriRuntimeProvider::new(socket_path));
         let kubelet_service =
@@ -1490,6 +1498,13 @@ fn register_workload_path(
         );
         kubelet_opts.runtime_endpoint = format!("unix://{}", socket_path.display());
         kubelet_opts.container_mode = is_container;
+        let timeout = builder.policy.startup_timeout();
+        builder = builder.register_component(crate::runtime_class::registration(
+            socket_path.clone(),
+            ctx.apiserver_service.admin_client(),
+            vec![runtime_id.to_string(), COMPONENT_APISERVER.to_string()],
+            timeout,
+        ));
         let runtime_provider: Arc<dyn RuntimeProvider> =
             Arc::new(CriRuntimeProvider::new(socket_path));
         let mut kubelet_service = KubeletService::new(

@@ -11,6 +11,11 @@ pub fn violations(path: &Path, bytes: &[u8]) -> Result<Vec<String>> {
         .and_then(|name| name.to_str())
         .unwrap_or("");
     let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+    // Local-only WASI image and registry fixtures; not part of the shipped Rust CLI.
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    if normalized.starts_with("container/wasip3/") && extension == "py" {
+        return Ok(Vec::new());
+    }
     let mut issues = Vec::new();
     if ["py", "pyi", "pyc", "pyo", "pyw", "pyz"].contains(&extension)
         || [
@@ -204,6 +209,21 @@ mod tests {
                 "{source}"
             );
         }
+        Ok(())
+    }
+    #[test]
+    fn allows_wasip3_fixture_python_helpers() -> Result<()> {
+        assert_eq!(
+            violations(
+                Path::new("container/wasip3/smoke.py"),
+                b"#!/usr/bin/env python3\n"
+            )?,
+            Vec::<String>::new()
+        );
+        assert_ne!(
+            violations(Path::new("driver.py"), b"")?,
+            Vec::<String>::new()
+        );
         Ok(())
     }
     #[test]

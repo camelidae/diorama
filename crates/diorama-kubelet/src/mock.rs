@@ -21,6 +21,7 @@ struct SandboxRecord {
     config: cri::PodSandboxConfig,
     state: cri::PodSandboxState,
     created_at: i64,
+    runtime_handler: String,
 }
 
 #[derive(Debug, Clone)]
@@ -229,7 +230,13 @@ fn to_container(id: &str, record: &ContainerRecord) -> cri::Container {
             .config
             .image
             .as_ref()
-            .map(|i| format!("sha256:mock-{}", i.image))
+            .map(|i| {
+                if i.image.starts_with("sha256:") {
+                    i.image.clone()
+                } else {
+                    format!("sha256:mock-{}", i.image)
+                }
+            })
             .unwrap_or_default(),
         state: record.state as i32,
         created_at: record.created_at,
@@ -290,6 +297,7 @@ impl RuntimeProvider for MockRuntimeProvider {
     async fn run_pod_sandbox(
         &self,
         config: &cri::PodSandboxConfig,
+        runtime_handler: &str,
     ) -> Result<String, KubeletError> {
         let id = self.next("sb");
         self.lock().sandboxes.insert(
@@ -298,6 +306,7 @@ impl RuntimeProvider for MockRuntimeProvider {
                 config: config.clone(),
                 state: cri::PodSandboxState::SandboxReady,
                 created_at: now_nanos(),
+                runtime_handler: runtime_handler.to_string(),
             },
         );
         Ok(id)
@@ -354,7 +363,7 @@ impl RuntimeProvider for MockRuntimeProvider {
                 created_at: s.created_at,
                 labels: s.config.labels.clone(),
                 annotations: s.config.annotations.clone(),
-                runtime_handler: String::new(),
+                runtime_handler: s.runtime_handler.clone(),
             })
             .collect())
     }
@@ -377,7 +386,7 @@ impl RuntimeProvider for MockRuntimeProvider {
             linux: None,
             labels: sandbox.config.labels.clone(),
             annotations: sandbox.config.annotations.clone(),
-            runtime_handler: String::new(),
+            runtime_handler: sandbox.runtime_handler.clone(),
         })
     }
 

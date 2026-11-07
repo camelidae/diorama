@@ -1,0 +1,111 @@
+--- a/internal/cri/server/helpers.go
++++ b/internal/cri/server/helpers.go
+@@ -38,6 +38,7 @@
+ 	imagestore "github.com/containerd/containerd/v2/internal/cri/store/image"
+ 	"github.com/containerd/errdefs"
+ 	"github.com/containerd/log"
++	"github.com/containerd/platforms"
+ )
+ 
+ // TODO: Move common helpers for sbserver and podsandbox to a dedicated package once basic services are functional.
+@@ -171,7 +172,11 @@
+ 	if len(image.References) == 0 {
+ 		return nil, fmt.Errorf("invalid image with no reference %q", image.ID)
+ 	}
+-	return c.client.GetImage(ctx, image.References[0])
++	i, err := c.client.ImageService().Get(ctx, image.ID)
++	if err != nil {
++		return nil, err
++	}
++	return containerd.NewImageWithPlatform(c.client, i, platforms.Only(image.ImageSpec.Platform)), nil
+ }
+ 
+ // getUserFromImage gets uid or user name of the image user.
+--- a/internal/cri/opts/container.go
++++ b/internal/cri/opts/container.go
+@@ -26,7 +26,6 @@
+ 	"github.com/containerd/continuity/fs"
+ 	"github.com/containerd/errdefs"
+ 	"github.com/containerd/log"
+-	"github.com/containerd/platforms"
+ 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
+ 	"golang.org/x/sync/semaphore"
+ 
+@@ -65,7 +64,7 @@
+ 	}
+ 	defer done(ctx)
+ 
+-	matcher := platforms.Default()
++	matcher := i.Platform()
+ 
+ 	capabilities, err := client.GetSnapshotterCapabilities(ctx, snapshotter)
+ 	if err != nil {
+--- a/internal/cri/server/images/image_status.go
++++ b/internal/cri/server/images/image_status.go
+@@ -27,6 +27,7 @@
+ 	"github.com/containerd/containerd/v2/internal/cri/util"
+ 	"github.com/containerd/errdefs"
+ 	"github.com/containerd/log"
++	"github.com/containerd/platforms"
+ 
+ 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
+ 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
+@@ -43,6 +44,17 @@
+ 			return &runtime.ImageStatusResponse{}, nil
+ 		}
+ 		return nil, fmt.Errorf("can not resolve %q locally: %w", r.GetImage().GetImage(), err)
++	}
++	handler, err := c.resolveRuntimeHandler(r.GetImage().GetRuntimeHandler())
++	if err != nil {
++		return nil, err
++	}
++	platform := platforms.DefaultSpec()
++	if handler.Platform != nil {
++		platform = *handler.Platform
++	}
++	if !platforms.Only(platform).Match(image.ImageSpec.Platform) {
++		return &runtime.ImageStatusResponse{}, nil
+ 	}
+ 	// TODO(random-liu): [P0] Make sure corresponding snapshot exists. What if snapshot
+ 	// doesn't exist?
+--- a/internal/cri/server/images/image_status_test.go
++++ b/internal/cri/server/images/image_status_test.go
+@@ -20,6 +20,8 @@
+ 	"context"
+ 	"testing"
+ 
++	"github.com/containerd/platforms"
++
+ 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
+ 	"github.com/stretchr/testify/assert"
+ 	"github.com/stretchr/testify/require"
+@@ -39,6 +41,7 @@
+ 		},
+ 		Size: 1234,
+ 		ImageSpec: imagespec.Image{
++			Platform: platforms.DefaultSpec(),
+ 			Config: imagespec.ImageConfig{
+ 				User: "user:group",
+ 			},
+@@ -119,3 +122,21 @@
+ 		})
+ 	}
+ }
++
++func TestImageStatusRuntimePlatform(t *testing.T) {
++    native := platforms.DefaultSpec()
++    wasm := imagespec.Platform{OS: "wasip3", Architecture: "wasm32"}
++    for _, cached := range []imagespec.Platform{native, wasm} {
++        c, _ := newTestCRIService()
++        c.runtimePlatforms = map[string]*ImagePlatform{"wasmtime": {Platform: &wasm}}
++        image := imagestore.Image{ID: "sha256:d848ce12891bf78792cda4a23c58984033b0c397a55e93a1556202222ecc5ed4", ImageSpec: imagespec.Image{Platform: cached}}
++        var err error
++        c.imageStore, err = imagestore.NewFakeStore([]imagestore.Image{image})
++        require.NoError(t, err)
++        for _, handler := range []string{"", "wasmtime"} {
++            response, err := c.ImageStatus(context.Background(), &runtime.ImageStatusRequest{Image: &runtime.ImageSpec{Image: image.ID, RuntimeHandler: handler}})
++            require.NoError(t, err)
++            assert.Equal(t, (handler == "wasmtime") == (cached.OS == "wasip3"), response.Image != nil)
++        }
++    }
++}

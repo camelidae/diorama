@@ -204,6 +204,7 @@ pub mod metrics;
 pub use config_api::{COMPONENT_CONFIG_API, ConfigApiAdapter, ConfigApiServer, clear_stale_socket};
 
 pub mod runtime;
+mod runtime_class;
 pub use runtime::{
     COMPONENT_APISERVER, COMPONENT_CONTAINERD, COMPONENT_CONTROLLER_MANAGER, COMPONENT_COREDNS,
     COMPONENT_DATASTORE, COMPONENT_EXTERNAL_CRI, COMPONENT_KUBELET, COMPONENT_LOCAL_PATH,

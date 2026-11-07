@@ -274,11 +274,15 @@ pub fn package(
         });
     }
     if kind == BundleKind::Host {
-        inputs.push(BundleInput {
-            source: assets.join("bin/ctr"),
-            relative: "bin/ctr".into(),
-            executable: true,
-        });
+        // Auxiliary executables share the installer's checksum and ELF validation.
+        // Keeping them outside the asset catalog preserves older bundle inventories.
+        for name in ["ctr", "containerd-shim-wasmtime-v1"] {
+            inputs.push(BundleInput {
+                source: assets.join("bin").join(name),
+                relative: format!("bin/{name}"),
+                executable: true,
+            });
+        }
     }
     let mut records = Vec::new();
     for entry in catalog().iter().filter(|e| bundle.includes(e.id)) {
@@ -400,6 +404,22 @@ pub fn package(
     for (relative, contents) in [
         ("asset-inventory.json", bytes.as_slice()),
         ("release-inputs.json", INPUTS.as_bytes()),
+        (
+            "build-containerd.sh",
+            include_bytes!("../../../container/wasip3/build-containerd.sh").as_slice(),
+        ),
+        (
+            "containerd.patch",
+            include_bytes!("../../../container/wasip3/containerd.patch").as_slice(),
+        ),
+        (
+            "build-wasip3.sh",
+            include_bytes!("../../../container/wasip3/build.sh").as_slice(),
+        ),
+        (
+            "runwasi.patch",
+            include_bytes!("../../../container/wasip3/runwasi.patch").as_slice(),
+        ),
     ] {
         let source = staging.path().join(relative);
         fs::write(&source, contents)?;

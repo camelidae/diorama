@@ -31,6 +31,9 @@ link_bin() {
 link_bin containerd
 link_bin containerd-shim-runc-v2
 link_bin crun
+if command -v containerd-shim-wasmtime-v1 >/dev/null 2>&1; then
+    link_bin containerd-shim-wasmtime-v1
+fi
 if command -v ctr >/dev/null 2>&1; then link_bin ctr; fi
 if command -v containerd-fuse-overlayfs-grpc >/dev/null 2>&1; then
     link_bin containerd-fuse-overlayfs-grpc
