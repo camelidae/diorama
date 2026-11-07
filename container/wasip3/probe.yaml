@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: p3-probe
+spec:
+  runtimeClassName: wasmtime
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: localhost/diorama-p3-probe:dev
+      imagePullPolicy: Never
+      args: [hello, from-pod]
+      env:
+        - name: P3_TEST
+          value: from-env
+      resources:
+        limits:
+          memory: 128Mi
+          cpu: "500m"

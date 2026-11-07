@@ -298,6 +298,22 @@ pub fn render_containerd_config(config: &ContainerdConfigFile) -> Result<String,
     Ok(quoted)
 }
 
+/// Whether the bundled WASI shim is installed and executable in this node's bin directory.
+pub fn wasip3_runtime_installed(bin_dir: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(bin_dir.join("containerd-shim-wasmtime-v1")) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 /// Write the containerd configuration to the destination specified in `paths.config_file`.
 ///
 /// Ensures parent directories exist. Preserves surrounding directories such as `registry/`.
@@ -306,7 +322,14 @@ pub fn write_containerd_config_file(
     options: &ContainerdConfigOptions,
 ) -> Result<PathBuf, ConfigError> {
     let config = generate_containerd_config(paths, options);
-    let toml_str = render_containerd_config(&config)?;
+    let mut toml_str = render_containerd_config(&config)?;
+    if paths
+        .shim_binary_file
+        .parent()
+        .is_some_and(wasip3_runtime_installed)
+    {
+        toml_str.push_str(include_str!("../../../container/wasip3/containerd.toml"));
+    }
 
     if let Some(parent) = paths.config_file.parent() {
         fs::create_dir_all(parent).map_err(|err| ConfigError::Io {
@@ -326,6 +349,39 @@ pub fn write_containerd_config_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn wasip3_configuration_requires_an_executable_and_keeps_native_default() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let paths = ContainerdServicePaths::from_base_dir(root.path());
+        let options = ContainerdConfigOptions::default();
+        let shim = paths
+            .shim_binary_file
+            .with_file_name("containerd-shim-wasmtime-v1");
+        fs::create_dir_all(shim.parent().unwrap()).unwrap();
+        fs::write(&shim, b"fixture").unwrap();
+        for mode in [0o644, 0o755] {
+            fs::set_permissions(&shim, fs::Permissions::from_mode(mode)).unwrap();
+            write_containerd_config_file(&paths, &options).unwrap();
+            let config: toml::Value =
+                toml::from_str(&fs::read_to_string(&paths.config_file).unwrap()).unwrap();
+            let runtime = &config["plugins"]["io.containerd.cri.v1.runtime"]["containerd"];
+            assert_eq!(runtime["default_runtime_name"].as_str(), Some("crun"));
+            assert_eq!(runtime["runtimes"].get("wasmtime").is_some(), mode == 0o755);
+            if mode == 0o755 {
+                assert_eq!(config["plugins"]["io.containerd.cri.v1.images"]["runtime_platforms"]["wasmtime"]["platform"].as_str(), Some("wasip3/wasm32"));
+            }
+        }
+        fs::remove_file(shim).unwrap();
+        write_containerd_config_file(&paths, &options).unwrap();
+        assert!(
+            !fs::read_to_string(&paths.config_file)
+                .unwrap()
+                .contains("wasmtime")
+        );
+    }
 
     #[test]
     fn generated_config_structure() {

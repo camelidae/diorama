@@ -29,6 +29,19 @@
 # Stop:
 #   podman stop diorama && podman rm diorama
 
+FROM golang:1.27.2-alpine AS containerd
+RUN apk add --no-cache make git curl patch
+WORKDIR /src
+COPY container/wasip3/build-containerd.sh container/wasip3/containerd.patch /build/
+RUN sh /build/build-containerd.sh
+
+FROM rust:1.97.1-alpine AS wasip3
+RUN apk add --no-cache build-base clang-dev llvm-dev cmake pkgconf \
+    libseccomp-dev libseccomp-static protobuf-dev git perl linux-headers curl
+WORKDIR /src
+COPY container/wasip3/build.sh container/wasip3/runwasi.patch /build/
+RUN sh /build/build.sh
+
 FROM alpine:3.22
 
 RUN printf '%s\n' \
@@ -44,7 +57,6 @@ RUN printf '%s\n' \
         kmod \
         e2fsprogs \
         ca-certificates \
-        containerd \
         crun \
         cni-plugins \
     && rm -f /usr/bin/runc /usr/bin/containerd-stress \
@@ -61,6 +73,9 @@ RUN printf '%s\n' \
 
 COPY --chmod=755 dist/diorama /usr/local/bin/diorama
 COPY --chmod=755 dist/dioramactl /usr/local/bin/dioramactl
+COPY --from=wasip3 /out/containerd-shim-wasmtime-v1 /usr/local/bin/containerd-shim-wasmtime-v1
+COPY --from=containerd /out/ /usr/local/bin/
+
 COPY --chmod=755 container/entrypoint.sh /usr/local/bin/diorama-entrypoint
 
 VOLUME ["/var/lib/diorama"]

@@ -65,6 +65,13 @@ jobs:
           printf 'ASSETS_DIR=%s\n' "$assets_dir" >> "$GITHUB_ENV"
           CARGO_PROFILE_DEV_CODEGEN_BACKEND=llvm cargo build --locked -p diorama-dev --bin diorama-release-bundle
           target/debug/diorama-release-bundle prepare "$BUNDLE_ARCH" "$assets_dir"
+      - name: Build the static WASI runtime and upstream containerd
+        run: |
+          docker build --platform "linux/$BUNDLE_ARCH" \
+            --file container/wasip3/Dockerfile --tag diorama-runtimes:build .
+          runtime_container=$(docker create diorama-runtimes:build /bin/ctr)
+          docker cp "$runtime_container:/bin/." "$ASSETS_DIR/bin/"
+          docker rm "$runtime_container"
       - name: Build minimal storage and self-installing add-on images
         run: |
           target/debug/diorama-release-bundle build-images "$RELEASE_VERSION" "$BUNDLE_ARCH" \
@@ -93,6 +100,8 @@ jobs:
           sudo unshare --net "$BINARY_DIR/dioramactl" install \
             --offline-install="$bundle" --path="$installed"
           cmp "$BINARY_DIR/diorama" "$installed/bin/diorama"
+          test -x "$installed/bin/containerd-shim-wasmtime-v1"
+          "$installed/bin/containerd-shim-wasmtime-v1" -v
           "$installed/bin/dioramactl" version
           test ! -e "$installed/images/diorama.tar.gz"
           test ! -e "$installed/images/portainer-agent.tar.gz"
@@ -102,6 +111,7 @@ jobs:
             "ghcr.io/geoffsee/diorama:$RELEASE_VERSION" -c '
               diorama-entrypoint --path=/offline/node --version &&
               test -x /offline/node/bin/containerd &&
+              test -x /offline/node/bin/containerd-shim-wasmtime-v1 &&
               test -x /offline/node/bin/ctr &&
               test -x /offline/node/cni/bin/bridge &&
               command -v dioramactl &&
@@ -131,6 +141,7 @@ jobs:
           install -m 0755 "target/${{ matrix.addon_target }}/dist/dioramactl" "$ghcr_ctx/dist/dioramactl"
           install -m 0755 container/entrypoint.sh "$ghcr_ctx/container/entrypoint.sh"
           cp container/Dockerfile "$ghcr_ctx/container/Dockerfile"
+          cp -R container/wasip3 "$ghcr_ctx/container/wasip3"
           local_ghcr="localhost:5000/diorama-ghcr:$RELEASE_VERSION"
           docker build --platform "linux/$BUNDLE_ARCH" \
             --file "$ghcr_ctx/container/Dockerfile" --tag "$local_ghcr" "$ghcr_ctx"
@@ -138,6 +149,7 @@ jobs:
             "$local_ghcr" -c '
               diorama-entrypoint --path=/offline/node --version &&
               test -x /offline/node/bin/containerd &&
+              test -x /offline/node/bin/containerd-shim-wasmtime-v1 &&
               test -x /offline/node/bin/crun &&
               test -x /offline/node/cni/bin/bridge &&
               command -v dioramactl'

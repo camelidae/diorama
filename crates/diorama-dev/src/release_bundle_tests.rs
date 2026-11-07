@@ -31,6 +31,7 @@ fn fixtures(root: &Path, arch: &str) -> (PathBuf, PathBuf) {
     }
     fs::create_dir_all(assets.join("bin")).unwrap();
     fs::write(assets.join("bin/ctr"), &binary).unwrap();
+    fs::write(assets.join("bin/containerd-shim-wasmtime-v1"), &binary).unwrap();
     for entry in catalog() {
         let path = assets.join(AssetLayout::default_relative_path(entry.id));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -79,6 +80,10 @@ fn both_release_bundles_have_a_complete_verified_installer_layout() {
         )
         .unwrap();
         assert_eq!(manifest.version, "v0.1.0");
+        assert_eq!(
+            fs::read(installed.join("bin/containerd-shim-wasmtime-v1")).unwrap(),
+            fs::read(assets.join("bin/containerd-shim-wasmtime-v1")).unwrap()
+        );
         for name in ["diorama", "dioramactl"] {
             assert_eq!(
                 fs::read(installed.join("bin").join(name)).unwrap(),
@@ -286,6 +291,7 @@ fn previously_emitted_zstd_host_payloads_remain_supported_and_bound_to_installed
 fn incomplete_wrong_platform_and_corrupt_inputs_never_publish_a_bundle() {
     for case in [
         "missing-runtime",
+        "missing-wasip3",
         "missing-cli",
         "foreign-elf",
         "foreign-image",
@@ -297,6 +303,9 @@ fn incomplete_wrong_platform_and_corrupt_inputs_never_publish_a_bundle() {
         match case {
             "missing-runtime" => {
                 fs::remove_file(assets.join("bin/containerd-fuse-overlayfs-grpc")).unwrap();
+            },
+            "missing-wasip3" => {
+                fs::remove_file(assets.join("bin/containerd-shim-wasmtime-v1")).unwrap();
             },
             "missing-cli" => fs::remove_file(binaries.join("dioramactl")).unwrap(),
             "foreign-elf" => fs::write(assets.join("bin/crun"), elf::executable(183, 2)).unwrap(),
@@ -347,7 +356,10 @@ fn pinned_inputs_cover_every_runtime_and_workload_role_on_both_release_targets()
         .filter(|entry| entry.kind == Kind::Executable)
         .map(|entry| AssetLayout::default_relative_path(entry.id))
         .collect();
-    expected.insert("bin/ctr");
+    // These are built from the checksum-pinned sources in container/wasip3,
+    // then copied into the prepared assets by the release workflow.
+    expected.remove("bin/containerd");
+    expected.remove("bin/containerd-shim-runc-v2");
     for arch in ["amd64", "arm64"] {
         let downloads = &sources.downloads[arch];
         let actual: BTreeSet<_> = downloads

@@ -158,6 +158,16 @@ impl Default for RbacAuthorizer {
     }
 }
 
+fn node_runtime_class_read_rule() -> PolicyRule {
+    PolicyRule {
+        verbs: vec!["get".to_string()],
+        api_groups: vec!["node.k8s.io".to_string()],
+        resources: vec!["runtimeclasses".to_string()],
+        resource_names: Vec::new(),
+        non_resource_urls: Vec::new(),
+    }
+}
+
 impl RbacAuthorizer {
     #[must_use]
     pub fn new() -> Self {
@@ -324,6 +334,7 @@ impl RbacAuthorizer {
                     resource_names: Vec::new(),
                     non_resource_urls: Vec::new(),
                 },
+                node_runtime_class_read_rule(),
                 PolicyRule {
                     verbs: vec!["get".to_string()],
                     api_groups: vec![String::new()],
@@ -564,8 +575,34 @@ impl RbacAuthorizer {
     }
 
     pub fn add_cluster_role(&self, role: ClusterRole) {
+        let retain_node_read = role.name == "system:node";
+        {
+            let mut map = self.cluster_roles.write().unwrap();
+            map.insert(role.name.clone(), role);
+        }
+        if retain_node_read {
+            self.retain_node_runtime_class_read();
+        }
+    }
+
+    /// Puts the node `RuntimeClass` read back onto `system:node`.
+    ///
+    /// A stored role replaces the seed, and a later write of that same role
+    /// would drop the in-memory read. Custom rules stay. The read is added
+    /// only when no rule already grants it.
+    pub(crate) fn retain_node_runtime_class_read(&self) {
         let mut map = self.cluster_roles.write().unwrap();
-        map.insert(role.name.clone(), role);
+        let Some(role) = map.get_mut("system:node") else {
+            return;
+        };
+        if role
+            .rules
+            .iter()
+            .any(|rule| rule.matches("get", "node.k8s.io", "runtimeclasses", Some("*")))
+        {
+            return;
+        }
+        role.rules.push(node_runtime_class_read_rule());
     }
 
     pub fn remove_cluster_role(&self, name: &str) {
@@ -886,7 +923,7 @@ fn rule_allows(rules: &[PolicyRule], req: &AuthzRequest<'_>) -> bool {
 mod tests {
     use serde_json::json;
 
-    use super::{AuthzRequest, RbacAuthorizer};
+    use super::{AuthzRequest, ClusterRole, PolicyRule, RbacAuthorizer};
 
     fn request<'a>(verb: &'a str, api_group: &'a str, resource: &'a str) -> AuthzRequest<'a> {
         AuthzRequest {
@@ -1076,6 +1113,25 @@ mod tests {
             resource_name: Some("default"),
         }));
 
+        assert!(authorizer.authorize(&AuthzRequest {
+            username: node_user,
+            groups: &groups,
+            verb: "get",
+            api_group: "node.k8s.io",
+            resource: "runtimeclasses",
+            namespace: None,
+            resource_name: Some("wasmtime"),
+        }));
+        assert!(!authorizer.authorize(&AuthzRequest {
+            username: node_user,
+            groups: &groups,
+            verb: "delete",
+            api_group: "node.k8s.io",
+            resource: "runtimeclasses",
+            namespace: None,
+            resource_name: Some("wasmtime"),
+        }));
+
         // Works with implicit group matching when groups is empty
         assert!(authorizer.authorize(&AuthzRequest {
             username: node_user,
@@ -1086,6 +1142,80 @@ mod tests {
             namespace: None,
             resource_name: None,
         }));
+    }
+
+    #[test]
+    fn stored_node_role_keeps_custom_rules_and_gains_runtime_class_read() {
+        let authorizer = RbacAuthorizer::new();
+        let groups = ["system:nodes".to_string()];
+        let node_user = "system:node:worker-1";
+
+        let stored = ClusterRole {
+            name: "system:node".to_string(),
+            rules: vec![PolicyRule {
+                verbs: vec!["get".to_string()],
+                api_groups: vec!["custom.example".to_string()],
+                resources: vec!["widgets".to_string()],
+                resource_names: Vec::new(),
+                non_resource_urls: Vec::new(),
+            }],
+        };
+        authorizer.add_cluster_role(stored.clone());
+        assert!(authorizer.authorize(&AuthzRequest {
+            username: node_user,
+            groups: &groups,
+            verb: "get",
+            api_group: "custom.example",
+            resource: "widgets",
+            namespace: None,
+            resource_name: None,
+        }));
+        assert!(authorizer.authorize(&AuthzRequest {
+            username: node_user,
+            groups: &groups,
+            verb: "get",
+            api_group: "node.k8s.io",
+            resource: "runtimeclasses",
+            namespace: None,
+            resource_name: Some("wasmer"),
+        }));
+        authorizer.add_cluster_role(stored);
+        assert!(authorizer.authorize(&AuthzRequest {
+            username: node_user,
+            groups: &groups,
+            verb: "get",
+            api_group: "node.k8s.io",
+            resource: "runtimeclasses",
+            namespace: None,
+            resource_name: Some("wasmer"),
+        }));
+        assert_eq!(
+            authorizer
+                .get_cluster_role("system:node")
+                .expect("system:node")
+                .rules
+                .len(),
+            2
+        );
+
+        authorizer.add_cluster_role(ClusterRole {
+            name: "system:node".to_string(),
+            rules: vec![PolicyRule {
+                verbs: vec!["*".to_string()],
+                api_groups: vec!["*".to_string()],
+                resources: vec!["*".to_string()],
+                resource_names: Vec::new(),
+                non_resource_urls: Vec::new(),
+            }],
+        });
+        assert_eq!(
+            authorizer
+                .get_cluster_role("system:node")
+                .expect("system:node")
+                .rules
+                .len(),
+            1
+        );
     }
 
     #[test]

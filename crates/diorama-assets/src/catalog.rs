@@ -41,10 +41,14 @@ pub struct CatalogEntry {
     pub encoding: Encoding,
 }
 const ENTRIES: [CatalogEntry; 15] = [
-    entry(AssetId::Containerd, "containerd/v2.2.5", Encoding::Identity),
+    entry(
+        AssetId::Containerd,
+        "containerd/43aa4ea134f3e50791b8537c48a18303f0fcc775",
+        Encoding::Identity,
+    ),
     entry(
         AssetId::ContainerdShim,
-        "containerd/v2.2.5/containerd-shim-runc-v2",
+        "containerd/43aa4ea134f3e50791b8537c48a18303f0fcc775/containerd-shim-runc-v2",
         Encoding::Zstd,
     ),
     entry(AssetId::Crun, "crun/1.26", Encoding::Zstd),

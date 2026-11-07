@@ -1099,6 +1099,18 @@ fn sandbox_config_base(pod: &Value, attempt: u32) -> cri::PodSandboxConfig {
     config
 }
 
+fn handler_from_runtime_class(name: &str, class: &Value) -> Result<String, KubeletError> {
+    class
+        .pointer("/handler")
+        .and_then(Value::as_str)
+        .filter(|handler| !handler.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| KubeletError::PodReconciliationFailed {
+            pod: name.to_string(),
+            reason: format!("RuntimeClass \"{name}\" has an empty handler"),
+        })
+}
+
 fn pod_bool(pod: &Value, field: &str) -> bool {
     pod.pointer(&format!("/spec/{field}"))
         .and_then(Value::as_bool)
@@ -3995,6 +4007,23 @@ impl PodReconciler {
         Ok(statuses)
     }
 
+    /// Resolves `spec.runtimeClassName` to the CRI handler. No class keeps the
+    /// runtime default.
+    async fn runtime_handler_for(&self, pod: &Value) -> Result<String, KubeletError> {
+        let Some(name) = pod
+            .pointer("/spec/runtimeClassName")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+        else {
+            return Ok(String::new());
+        };
+        let class = self
+            .client
+            .get_cluster_object("node.k8s.io", "runtimeclasses", name)
+            .await?;
+        handler_from_runtime_class(name, &class)
+    }
+
     /// Finds the pod's ready sandbox or creates one, removing stale sandboxes.
     async fn ensure_sandbox(
         &self,
@@ -4029,7 +4058,8 @@ impl PodReconciler {
         }
         let mut config =
             sandbox_config_with_dns(pod, attempt, &self.cluster_dns, &self.cluster_domain);
-        let id = match self.runtime.run_pod_sandbox(&config).await {
+        let handler = self.runtime_handler_for(pod).await?;
+        let id = match self.runtime.run_pod_sandbox(&config, &handler).await {
             Ok(id) => id,
             Err(e) => {
                 let has_sysctls = config.linux.as_ref().is_some_and(|l| !l.sysctls.is_empty());
@@ -4037,7 +4067,7 @@ impl PodReconciler {
                     if let Some(linux) = config.linux.as_mut() {
                         linux.sysctls.clear();
                     }
-                    self.runtime.run_pod_sandbox(&config).await?
+                    self.runtime.run_pod_sandbox(&config, &handler).await?
                 } else {
                     return Err(e);
                 }
@@ -4051,22 +4081,24 @@ impl PodReconciler {
         &self,
         container: &Value,
         sandbox_config: &cri::PodSandboxConfig,
-    ) -> Result<(), StartFailure> {
+        runtime_handler: String,
+    ) -> Result<String, StartFailure> {
         let image = container.get("image").and_then(Value::as_str).unwrap_or("");
         let spec = cri::ImageSpec {
             image: image.to_string(),
             user_specified_image: image.to_string(),
+            runtime_handler,
             ..cri::ImageSpec::default()
         };
-        let present = self
+        let cached = self
             .runtime
             .image_status(&spec)
             .await
             .map_err(|e| StartFailure {
                 reason: "ErrImagePull",
                 message: format!("failed to inspect image {image}: {e}"),
-            })?
-            .is_some();
+            })?;
+        let present = cached.is_some();
         let pull = match PullPolicy::of(container) {
             PullPolicy::Always => true,
             PullPolicy::IfNotPresent => !present,
@@ -4081,15 +4113,17 @@ impl PodReconciler {
             },
         };
         if pull {
-            self.runtime
+            return self
+                .runtime
                 .pull_image(&spec, Some(sandbox_config))
                 .await
                 .map_err(|e| StartFailure {
                     reason: "ErrImagePull",
                     message: format!("failed to pull image {image}: {e}"),
-                })?;
+                });
         }
-        Ok(())
+        // Pin creation to the selected image, even if another runtime pulls the same tag.
+        Ok(cached.expect("pull policy requires a cached image here").id)
     }
 
     async fn execute_lifecycle_hook(
@@ -4353,7 +4387,16 @@ impl PodReconciler {
         attempt: u32,
         pod_ip: Option<&str>,
     ) -> Result<String, StartFailure> {
-        self.ensure_image(container, sandbox_config).await?;
+        let handler = self
+            .runtime_handler_for(pod)
+            .await
+            .map_err(|error| StartFailure {
+                reason: "ErrImagePull",
+                message: error.to_string(),
+            })?;
+        let image_id = self
+            .ensure_image(container, sandbox_config, handler.clone())
+            .await?;
         let namespace = pod
             .pointer("/metadata/namespace")
             .and_then(Value::as_str)
@@ -4365,6 +4408,10 @@ impl PodReconciler {
                     reason: "CreateContainerConfigError",
                     message: e.to_string(),
                 })?;
+        if let Some(image) = config.image.as_mut() {
+            image.image = image_id;
+            image.runtime_handler = handler;
+        }
         let name = pod_name(pod);
         let assignment = self.cpu_assignment(namespace, name, pod, container);
         let linux = config
@@ -7159,6 +7206,16 @@ fn dead_container_views<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_class_handler_is_wasmtime_or_absent() {
+        assert_eq!(
+            handler_from_runtime_class("wasmtime", &json!({"handler": "wasmtime"})).unwrap(),
+            "wasmtime"
+        );
+        let err = handler_from_runtime_class("wasmtime", &json!({})).unwrap_err();
+        assert!(err.to_string().contains("empty handler"));
+    }
 
     #[test]
     fn pod_has_service_account_token_custom_projected_tokens() {
