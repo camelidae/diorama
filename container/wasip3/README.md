@@ -81,7 +81,19 @@ image ID returned by CRI during creation, so pulling the other platform under
 the same tag cannot change the selected workload. Native pods retain crun and
 the native platform; WASI images are never relabeled as Linux.
 
-For a disposable HTTP registry, publish the probe archive and a native BusyBox
+## Wasm OCI registry
+
+`container/wasip3/oci-registry` is an OCI Distribution `/v2/` server as a
+`wasi:cli/run` component (TCP + filesystem; no WIT, no custom host). Deploy with
+`runtimeClassName: wasmtime`. See `oci-registry/README.md`.
+
+```sh
+cd container/wasip3/oci-registry
+cargo run --release -- --bind 127.0.0.1:5000 --data /tmp/oci-reg
+# Wasm: cargo build --release --target wasm32-wasip3
+```
+
+For a disposable external HTTP registry, publish the probe archive and a native BusyBox
 OCI archive using `registry.py --help`. Configure that registry in containerd's
 `registry/HOST:PORT/hosts.toml`, then run:
 

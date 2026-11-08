@@ -1,0 +1,18 @@
+[package]
+name = "oci-registry-wasip3"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "OCI Distribution registry as a WASI 0.3 command (TCP + filesystem, no WIT)"
+
+# Standalone. Zero crate deps — compiles native for smoke tests and to
+# wasm32-wasip3 for RuntimeClass wasmtime.
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
+
+[workspace]
