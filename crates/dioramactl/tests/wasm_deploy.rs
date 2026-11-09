@@ -125,15 +125,16 @@ fn execute_dry_run_writes_artifacts() {
     for name in [
         "app.wasm",
         "app.image.tar",
-        "wasm-app-deployment.yml",
-        "wasm-app-service.yml",
+        "wasm-app-job.yml",
         "wasm-app-storage.yml",
     ] {
         assert!(out.join(name).is_file(), "missing {name}");
     }
-    let deployment = fs::read_to_string(out.join("wasm-app-deployment.yml")).unwrap();
-    assert!(deployment.contains("runtimeClassName: wasmtime"));
-    assert!(deployment.contains("image: oci-registry:5000/sample:dev"));
+    let job = fs::read_to_string(out.join("wasm-app-job.yml")).unwrap();
+    assert!(job.contains("kind: Job"));
+    assert!(job.contains("restartPolicy: Never"));
+    assert!(job.contains("runtimeClassName: wasmtime"));
+    assert!(job.contains("image: oci-registry:5000/sample:dev"));
     let tar = fs::read(out.join("app.image.tar")).unwrap();
     let tar_text = String::from_utf8_lossy(&tar);
     assert!(tar_text.contains("oci-layout"));
@@ -156,6 +157,27 @@ fn execute_without_output_errors() {
     .unwrap();
     assert_eq!(code, 1);
     assert!(String::from_utf8_lossy(&stderr).contains("--output"));
+}
+
+#[test]
+fn parse_wasm_kind_deployment() {
+    let parsed = parse_command(
+        &args(&[
+            "wasm",
+            "deploy",
+            "app.wasm",
+            "-o",
+            "./dist/app",
+            "--kind",
+            "deployment",
+        ]),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let Command::Wasm(options) = parsed else {
+        panic!("expected wasm command");
+    };
+    assert_eq!(options.kind, dioramactl::wasm::WorkloadKind::Deployment);
 }
 
 #[test]

@@ -126,6 +126,8 @@ fn build_config(command: &VmCommand) -> io::Result<oci_cri::Config> {
         state_root: base.join("state"),
         host_shares: vec![path],
         pod_cidr: pod_cidr.to_owned(),
+        // In-cluster oci-registry and host-forwarded registries speak plain HTTP.
+        insecure_registries: true,
         ..oci_cri::Config::default()
     })
 }

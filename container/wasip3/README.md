@@ -87,6 +87,8 @@ the native platform; WASI images are never relabeled as Linux.
 `wasi:cli/run` component (TCP + filesystem; no WIT, no custom host). Deploy with
 `runtimeClassName: wasmtime`. See `oci-registry/README.md`.
 
+The macOS guest pulls `oci-registry:5000/...` by mapping that name to the registry pod IP (NAT DNS does not see Service names). `dioramactl vm` enables insecure HTTP for `oci-registry` and private prefixes. `wasm deploy` defaults to a Job so an exiting command is Succeeded; use `--kind deployment` for a long-running server.
+
 ```sh
 cd container/wasip3/oci-registry
 cargo run --release -- --bind 127.0.0.1:5000 --data /tmp/oci-reg

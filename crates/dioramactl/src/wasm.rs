@@ -10,7 +10,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-pub const HELP: &str = "Package a WASI 0.3 command for cluster deploy.\n\nUsage:\n  dioramactl wasm deploy <app.wasm> -o <outdir> [--dry-run] [--push-only] [--name <app>] [--port <n>] [--image <ref>] [--registry <url>]\n\nAlways writes app.wasm, app.image.tar, and Kubernetes manifests under <outdir>.\nWithout --dry-run, also pushes the image to --registry (or http://<image-host>) and runs kubectl apply.\nUse --push-only to push without applying manifests.\n";
+pub const HELP: &str = "Package a WASI 0.3 command for cluster deploy.\n\nUsage:\n  dioramactl wasm deploy <app.wasm> -o <outdir> [--dry-run] [--push-only] [--name <app>] [--port <n>] [--image <ref>] [--registry <url>] [--kind job|pod|deployment]\n\nAlways writes app.wasm, app.image.tar, and Kubernetes manifests under <outdir>.\nWithout --dry-run, also pushes the image to --registry (or http://<image-host>) and runs kubectl apply.\nUse --push-only to push without applying manifests.\n\n--kind defaults to job (restartPolicy Never) so a command that exits 0 is Succeeded.\nUse --kind deployment for a long-running server; that also writes a Service.\n";
+
+/// Workload written for `wasm deploy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkloadKind {
+    /// One-shot command. Exit 0 becomes Job Succeeded.
+    Job,
+    /// One-shot command with no controller.
+    Pod,
+    /// Long-running server. Also writes a Service.
+    Deployment,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WasmOptions {
@@ -22,6 +33,7 @@ pub struct WasmOptions {
     pub port: u16,
     pub image: Option<String>,
     pub registry: Option<String>,
+    pub kind: WorkloadKind,
 }
 
 pub fn parse(args: &[String]) -> Result<WasmOptions, crate::ParseError> {
@@ -39,6 +51,7 @@ pub fn parse(args: &[String]) -> Result<WasmOptions, crate::ParseError> {
         port: 8080,
         image: None,
         registry: None,
+        kind: WorkloadKind::Job,
     };
     while let Some(arg) = rest.next() {
         if arg == "--dry-run" {
@@ -81,6 +94,14 @@ pub fn parse(args: &[String]) -> Result<WasmOptions, crate::ParseError> {
             },
             "--registry" if !value.is_empty() && !value.starts_with('-') => {
                 options.registry = Some(value.to_string());
+            },
+            "--kind" if !value.is_empty() && !value.starts_with('-') => {
+                options.kind = match value {
+                    "job" => WorkloadKind::Job,
+                    "pod" => WorkloadKind::Pod,
+                    "deployment" => WorkloadKind::Deployment,
+                    _ => return Err(crate::ParseError::UnknownFlag),
+                };
             },
             _ => return Err(crate::ParseError::UnknownFlag),
         }
@@ -152,11 +173,13 @@ pub fn execute(
         return Ok(0);
     }
 
-    let manifests = [
+    let mut manifests = vec![
         output.join("wasm-app-storage.yml"),
-        output.join("wasm-app-deployment.yml"),
-        output.join("wasm-app-service.yml"),
+        output.join(workload_file(resolved.kind)),
     ];
+    if resolved.kind == WorkloadKind::Deployment {
+        manifests.push(output.join("wasm-app-service.yml"));
+    }
     if let Err(err) = kubectl_apply(&manifests) {
         writeln!(stderr, "error: kubectl apply failed: {err}")?;
         return Ok(1);
@@ -184,6 +207,7 @@ struct Resolved {
     port: u16,
     image: String,
     image_ref: ImageRef,
+    kind: WorkloadKind,
 }
 
 struct Packaged {
@@ -230,7 +254,16 @@ fn resolve(options: &WasmOptions) -> io::Result<Resolved> {
         port: options.port,
         image,
         image_ref,
+        kind: options.kind,
     })
+}
+
+fn workload_file(kind: WorkloadKind) -> &'static str {
+    match kind {
+        WorkloadKind::Job => "wasm-app-job.yml",
+        WorkloadKind::Pod => "wasm-app-pod.yml",
+        WorkloadKind::Deployment => "wasm-app-deployment.yml",
+    }
 }
 
 fn is_dns_label(name: &str) -> bool {
@@ -311,17 +344,54 @@ fn package(resolved: &Resolved, output: &Path) -> io::Result<Packaged> {
     let packaged = build_oci(&wasm_bytes, &resolved.image)?;
     write_oci_archive(output.join("app.image.tar"), &packaged)?;
     fs::write(
-        output.join("wasm-app-deployment.yml"),
-        deployment_yaml(resolved),
+        output.join(workload_file(resolved.kind)),
+        workload_yaml(resolved),
     )?;
-    fs::write(output.join("wasm-app-service.yml"), service_yaml(resolved))?;
+    if resolved.kind == WorkloadKind::Deployment {
+        fs::write(output.join("wasm-app-service.yml"), service_yaml(resolved))?;
+    }
     fs::write(output.join("wasm-app-storage.yml"), storage_yaml(resolved))?;
     Ok(packaged)
 }
 
-fn deployment_yaml(resolved: &Resolved) -> String {
-    format!(
-        r#"apiVersion: apps/v1
+fn workload_yaml(resolved: &Resolved) -> String {
+    match resolved.kind {
+        WorkloadKind::Job => format!(
+            r#"apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {name}
+  labels:
+    app: {name}
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: {name}
+    spec:
+      restartPolicy: Never
+{container}
+"#,
+            name = resolved.name,
+            container = container_spec(resolved, "      "),
+        ),
+        WorkloadKind::Pod => format!(
+            r#"apiVersion: v1
+kind: Pod
+metadata:
+  name: {name}
+  labels:
+    app: {name}
+spec:
+  restartPolicy: Never
+{container}
+"#,
+            name = resolved.name,
+            container = container_spec(resolved, ""),
+        ),
+        WorkloadKind::Deployment => format!(
+            r#"apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {name}
@@ -337,26 +407,36 @@ spec:
       labels:
         app: {name}
     spec:
-      runtimeClassName: wasmtime
-      containers:
-        - name: {name}
-          image: {image}
-          imagePullPolicy: IfNotPresent
-          ports:
-            - name: http
-              containerPort: {port}
-          volumeMounts:
-            - name: data
-              mountPath: /data
-          resources:
-            limits:
-              memory: 128Mi
-              cpu: "500m"
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: {name}-data
+{container}
 "#,
+            name = resolved.name,
+            container = container_spec(resolved, "      "),
+        ),
+    }
+}
+
+fn container_spec(resolved: &Resolved, indent: &str) -> String {
+    format!(
+        "{indent}runtimeClassName: wasmtime\n\
+         {indent}containers:\n\
+         {indent}  - name: {name}\n\
+         {indent}    image: {image}\n\
+         {indent}    imagePullPolicy: IfNotPresent\n\
+         {indent}    ports:\n\
+         {indent}      - name: http\n\
+         {indent}        containerPort: {port}\n\
+         {indent}    volumeMounts:\n\
+         {indent}      - name: data\n\
+         {indent}        mountPath: /data\n\
+         {indent}    resources:\n\
+         {indent}      limits:\n\
+         {indent}        memory: 128Mi\n\
+         {indent}        cpu: \"500m\"\n\
+         {indent}volumes:\n\
+         {indent}  - name: data\n\
+         {indent}    persistentVolumeClaim:\n\
+         {indent}      claimName: {name}-data\n",
+        indent = indent,
         name = resolved.name,
         image = resolved.image,
         port = resolved.port,
@@ -878,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_writes_five_artifacts() {
+    fn dry_run_writes_job_artifacts() {
         let dir = tmpdir();
         fs::create_dir_all(&dir).unwrap();
         let wasm = dir.join("input.wasm");
@@ -893,6 +973,7 @@ mod tests {
             port: 8080,
             image: None,
             registry: None,
+            kind: WorkloadKind::Job,
         };
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -900,15 +981,17 @@ mod tests {
         for name in [
             "app.wasm",
             "app.image.tar",
-            "wasm-app-deployment.yml",
-            "wasm-app-service.yml",
+            "wasm-app-job.yml",
             "wasm-app-storage.yml",
         ] {
             assert!(out.join(name).is_file(), "missing {name}");
         }
-        let deployment = fs::read_to_string(out.join("wasm-app-deployment.yml")).unwrap();
-        assert!(deployment.contains("runtimeClassName: wasmtime"));
-        assert!(deployment.contains("image: oci-registry:5000/hello:dev"));
+        assert!(!out.join("wasm-app-service.yml").exists());
+        let job = fs::read_to_string(out.join("wasm-app-job.yml")).unwrap();
+        assert!(job.contains("kind: Job"));
+        assert!(job.contains("restartPolicy: Never"));
+        assert!(job.contains("runtimeClassName: wasmtime"));
+        assert!(job.contains("image: oci-registry:5000/hello:dev"));
         let tar = fs::read(out.join("app.image.tar")).unwrap();
         let tar_text = String::from_utf8_lossy(&tar);
         assert!(tar_text.contains("oci-layout"));
@@ -927,6 +1010,7 @@ mod tests {
             port: 8080,
             image: None,
             registry: None,
+            kind: WorkloadKind::Job,
         };
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
