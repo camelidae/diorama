@@ -33,6 +33,15 @@ The broader Linux target matrix includes glibc and musl. Targets describe intend
 coverage, not available artifacts. The [asset catalog](../crates/diorama-assets/CATALOG.md)
 records the detailed matrix and packaging requirements.
 
+## Optional runtime features
+
+When a connected CRI advertises `wasmtime`, the node registers that RuntimeClass
+and bootstraps the embedded in-cluster OCI registry used by
+`dioramactl wasm deploy`. Without that handler, WASI workloads and the registry
+bootstrap are skipped. Details are in
+[Architecture](architecture.md#workload-execution) and
+[WASI 0.3](../container/wasip3/README.md).
+
 ## Out of scope
 
 - An in-tree general-purpose Kubernetes scheduler

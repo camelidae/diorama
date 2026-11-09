@@ -24,6 +24,14 @@ runtime through CRI. diorama can manage containerd or connect to a host-managed
 CRI endpoint. Networking connects Pods and implements Service routing; DNS and
 local-path storage provide name resolution and persistent volumes.
 
+When the connected CRI advertises a `wasmtime` runtime handler, the node
+registers the matching RuntimeClass and bootstraps an in-cluster OCI registry
+Pod and Service (`oci-registry` in `default`). The registry image is embedded in
+the node binary and imported through CRI `oci-archive` ingestion, so a normal
+start does not pull from GHCR or require a manual `kubectl apply`. See
+[WASI 0.3 runtime](../container/wasip3/README.md) and
+[oci-registry](../container/wasip3/oci-registry/README.md).
+
 In single-host mode, NodeSetter admission assigns workloads to the local node.
 The project does not include a general-purpose scheduler. Adding nodes alone
 does not provide automatic workload placement across them.
