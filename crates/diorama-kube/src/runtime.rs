@@ -1312,6 +1312,20 @@ fn is_dir_writable(dir: &Path) -> bool {
     }
 }
 
+#[derive(Clone, Copy)]
+enum HostOs {
+    Linux,
+    Macos,
+    Other,
+}
+
+#[derive(Clone, Copy)]
+struct WorkloadHost {
+    os: HostOs,
+    oci_enabled: bool,
+    vm_helper: bool,
+}
+
 fn detect_workload_runtime(
     config: &diorama_config::Config,
     state_dir: &Path,
@@ -1319,10 +1333,17 @@ fn detect_workload_runtime(
     detect_workload_runtime_for_host(
         config,
         state_dir,
-        cfg!(target_os = "linux"),
-        cfg!(target_os = "macos"),
-        cfg!(feature = "oci-cri"),
-        macos_vm_helper_available(),
+        WorkloadHost {
+            os: if cfg!(target_os = "linux") {
+                HostOs::Linux
+            } else if cfg!(target_os = "macos") {
+                HostOs::Macos
+            } else {
+                HostOs::Other
+            },
+            oci_enabled: cfg!(feature = "oci-cri"),
+            vm_helper: macos_vm_helper_available(),
+        },
     )
 }
 
@@ -1344,11 +1365,12 @@ fn macos_vm_helper_available() -> bool {
 fn detect_workload_runtime_for_host(
     config: &diorama_config::Config,
     state_dir: &Path,
-    linux: bool,
-    macos: bool,
-    oci_enabled: bool,
-    vm_helper: bool,
+    host: WorkloadHost,
 ) -> Result<Option<(&'static str, PathBuf)>, RuntimeError> {
+    let linux = matches!(host.os, HostOs::Linux);
+    let macos = matches!(host.os, HostOs::Macos);
+    let oci_enabled = host.oci_enabled;
+    let vm_helper = host.vm_helper;
     let invalid =
         |message| RuntimeError::from(io::Error::new(io::ErrorKind::InvalidInput, message));
     if macos && !config.runtime.endpoint.trim().is_empty() {
@@ -1768,27 +1790,47 @@ mod node_ip_for_config_tests {
 mod runtime_selection_tests {
     use super::*;
 
+    fn linux_host(oci_enabled: bool) -> WorkloadHost {
+        WorkloadHost {
+            os: HostOs::Linux,
+            oci_enabled,
+            vm_helper: false,
+        }
+    }
+
+    fn macos_host(oci_enabled: bool, vm_helper: bool) -> WorkloadHost {
+        WorkloadHost {
+            os: HostOs::Macos,
+            oci_enabled,
+            vm_helper,
+        }
+    }
+
+    fn other_host(oci_enabled: bool) -> WorkloadHost {
+        WorkloadHost {
+            os: HostOs::Other,
+            oci_enabled,
+            vm_helper: false,
+        }
+    }
+
     #[test]
     fn explicit_oci_selection_checks_platform_feature_and_endpoint() {
         let mut config = diorama_config::Config::default();
         config.runtime.backend = "oci-cri".into();
         let base = Path::new("/test/node");
-        assert!(
-            detect_workload_runtime_for_host(&config, base, false, false, true, false).is_err()
-        );
-        assert!(
-            detect_workload_runtime_for_host(&config, base, true, false, false, false).is_err()
-        );
+        assert!(detect_workload_runtime_for_host(&config, base, other_host(true)).is_err());
+        assert!(detect_workload_runtime_for_host(&config, base, linux_host(false)).is_err());
         assert_eq!(
-            detect_workload_runtime_for_host(&config, base, true, false, true, false).unwrap(),
+            detect_workload_runtime_for_host(&config, base, linux_host(true)).unwrap(),
             Some(("oci-cri", base.join("oci-cri/cri.sock")))
         );
         assert_eq!(
-            detect_workload_runtime_for_host(&config, base, false, true, true, false).unwrap(),
+            detect_workload_runtime_for_host(&config, base, macos_host(true, false)).unwrap(),
             Some((COMPONENT_OCI_CRI_VM, base.join("oci-cri/cri.sock")))
         );
         config.runtime.endpoint = "/host/cri.sock".into();
-        assert!(detect_workload_runtime_for_host(&config, base, true, false, true, false).is_err());
+        assert!(detect_workload_runtime_for_host(&config, base, linux_host(true)).is_err());
     }
 
     #[test]
@@ -1797,34 +1839,34 @@ mod runtime_selection_tests {
         let base = Path::new("/test/node");
         let oci = Some((COMPONENT_OCI_CRI_VM, base.join("oci-cri/cri.sock")));
         assert!(
-            detect_workload_runtime_for_host(&config, base, false, true, true, false)
+            detect_workload_runtime_for_host(&config, base, macos_host(true, false))
                 .unwrap()
                 .is_none()
         );
         assert_eq!(
-            detect_workload_runtime_for_host(&config, base, false, true, true, true).unwrap(),
+            detect_workload_runtime_for_host(&config, base, macos_host(true, true)).unwrap(),
             oci
         );
         config.runtime.backend = "auto".into();
         assert_eq!(
-            detect_workload_runtime_for_host(&config, base, false, true, true, true).unwrap(),
+            detect_workload_runtime_for_host(&config, base, macos_host(true, true)).unwrap(),
             oci
         );
         assert_eq!(
-            detect_workload_runtime_for_host(&config, base, false, true, false, true).unwrap(),
+            detect_workload_runtime_for_host(&config, base, macos_host(false, true)).unwrap(),
             oci
         );
         config.runtime.backend = "oci-cri".into();
         assert_eq!(
-            detect_workload_runtime_for_host(&config, base, false, true, true, false).unwrap(),
+            detect_workload_runtime_for_host(&config, base, macos_host(true, false)).unwrap(),
             oci
         );
         config.runtime.backend = "containerd".into();
-        assert!(detect_workload_runtime_for_host(&config, base, false, true, true, true).is_err());
+        assert!(detect_workload_runtime_for_host(&config, base, macos_host(true, true)).is_err());
         config.runtime.backend = "auto".into();
         config.runtime.endpoint = "unix:///host/cri.sock".into();
         assert_eq!(
-            detect_workload_runtime_for_host(&config, base, false, true, true, true).unwrap(),
+            detect_workload_runtime_for_host(&config, base, macos_host(true, true)).unwrap(),
             Some((COMPONENT_EXTERNAL_CRI, PathBuf::from("/host/cri.sock")))
         );
     }
@@ -1834,28 +1876,23 @@ mod runtime_selection_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut config = diorama_config::Config::default();
         assert!(
-            detect_workload_runtime_for_host(&config, dir.path(), true, false, true, false)
+            detect_workload_runtime_for_host(&config, dir.path(), linux_host(true))
                 .unwrap()
                 .is_none()
         );
         config.runtime.backend = "containerd".into();
-        assert!(
-            detect_workload_runtime_for_host(&config, dir.path(), true, false, true, false)
-                .is_err()
-        );
+        assert!(detect_workload_runtime_for_host(&config, dir.path(), linux_host(true)).is_err());
         let paths = ContainerdPaths::from_base(dir.path());
         std::fs::create_dir_all(paths.binary_path.parent().unwrap()).unwrap();
         std::fs::write(&paths.binary_path, []).unwrap();
         assert_eq!(
-            detect_workload_runtime_for_host(&config, dir.path(), true, false, true, false)
-                .unwrap(),
+            detect_workload_runtime_for_host(&config, dir.path(), linux_host(true)).unwrap(),
             Some((COMPONENT_CONTAINERD, paths.socket_path))
         );
         config.runtime.backend = "auto".into();
         config.runtime.endpoint = "unix:///host/cri.sock".into();
         assert_eq!(
-            detect_workload_runtime_for_host(&config, dir.path(), true, false, true, false)
-                .unwrap(),
+            detect_workload_runtime_for_host(&config, dir.path(), linux_host(true)).unwrap(),
             Some((COMPONENT_EXTERNAL_CRI, PathBuf::from("/host/cri.sock")))
         );
     }
