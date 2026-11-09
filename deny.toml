@@ -12,7 +12,10 @@ all-features = true
 [advisories]
 unmaintained = "workspace"
 unsound = "all"
-ignore = []
+ignore = [
+    # Transitive through oci-util image signatures (rsa 0.9 BigUint API). Not a TLS stack.
+    "RUSTSEC-2023-0071",
+]
 
 [bans]
 multiple-versions = "deny"
@@ -54,7 +57,8 @@ skip = [
     { name = "thiserror" },
     { name = "thiserror-impl" },
 ]
-skip-tree = []
+# oci-util's image-signature stack (rsa 0.9 / p256 0.14) duplicates the workspace crypto crates.
+skip-tree = [{ name = "oci-util" }]
 
 [bans.std-replacements]
 scope = "workspace"
@@ -64,7 +68,7 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # The optional managed CRI adapter pins the reviewed upstream runtime revision.
-allow-git = ["https://github.com/geoffsee/oci-lib"]
+allow-git = ["https://github.com/camelidae/oci-lib"]
 
 [licenses]
 confidence-threshold = 0.93

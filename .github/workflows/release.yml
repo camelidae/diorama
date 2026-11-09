@@ -19,11 +19,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    services:
-      registry:
-        image: registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
-        ports:
-          - '127.0.0.1:5000:5000'
     strategy:
       fail-fast: false
       matrix:
@@ -72,6 +67,26 @@ jobs:
           runtime_container=$(docker create diorama-runtimes:build /bin/ctr)
           docker cp "$runtime_container:/bin/." "$ASSETS_DIR/bin/"
           docker rm "$runtime_container"
+      - name: Start local OCI registry
+        run: |
+          # Replace the old registry:2 service with the in-tree WASI/native
+          # Distribution server. Same localhost:5000 contract for docker/crane.
+          cargo build --release --manifest-path container/wasip3/oci-registry/Cargo.toml
+          mkdir -p "$RUNNER_TEMP/oci-registry-data"
+          ./container/wasip3/oci-registry/target/release/oci-registry-wasip3 \
+            --bind 127.0.0.1:5000 \
+            --data "$RUNNER_TEMP/oci-registry-data" \
+            >"$RUNNER_TEMP/oci-registry.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/oci-registry.pid"
+          for _ in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:5000/v2/ >/dev/null; then
+              exit 0
+            fi
+            sleep 0.1
+          done
+          echo "oci-registry failed to become ready" >&2
+          cat "$RUNNER_TEMP/oci-registry.log" >&2 || true
+          exit 1
       - name: Build minimal storage and self-installing add-on images
         run: |
           target/debug/diorama-release-bundle build-images "$RELEASE_VERSION" "$BUNDLE_ARCH" \

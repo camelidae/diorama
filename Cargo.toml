@@ -3,7 +3,7 @@ cargo-features = ["codegen-backend"]
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = ["third_party/saphyr-parser", "third_party/datagram-socket"]
+exclude = ["vendor/saphyr-parser", "vendor/datagram-socket"]
 default-members = ["crates/diorama-kube"]
 
 [workspace.package]
@@ -82,5 +82,5 @@ debug = "full"
 strip = false
 
 [patch.crates-io]
-saphyr-parser = { path = "third_party/saphyr-parser" }
-datagram-socket = { path = "third_party/datagram-socket" }
+saphyr-parser = { path = "vendor/saphyr-parser" }
+datagram-socket = { path = "vendor/datagram-socket" }

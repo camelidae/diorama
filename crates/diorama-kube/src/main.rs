@@ -83,7 +83,26 @@ fn run() -> io::Result<u8> {
                 )
             })
         })
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    // /var/lib is root-owned on macOS; keep a zero-argument start in the user's
+    // Library. An explicit --path or DIORAMA_PATH still wins.
+    #[cfg(target_os = "macos")]
+    let environment = {
+        let mut environment = environment;
+        let explicit = args
+            .iter()
+            .any(|arg: &String| arg == "--path" || arg.starts_with("--path="));
+        if !explicit
+            && !environment.contains_key("DIORAMA_PATH")
+            && let Some(home) = std::env::var_os("HOME").and_then(|home| home.into_string().ok())
+        {
+            environment.insert(
+                "DIORAMA_PATH".to_owned(),
+                format!("{home}/Library/Application Support/diorama"),
+            );
+        }
+        environment
+    };
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
     match diorama::execute(

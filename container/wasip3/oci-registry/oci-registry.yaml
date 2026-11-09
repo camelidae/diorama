@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oci-registry
+  labels:
+    app: oci-registry
+spec:
+  runtimeClassName: wasmtime
+  restartPolicy: Always
+  containers:
+    - name: registry
+      image: localhost/diorama-oci-registry:dev
+      imagePullPolicy: Never
+      ports:
+        - name: registry
+          containerPort: 5000
+      env:
+        - name: OCI_REGISTRY_BIND
+          value: "0.0.0.0:5000"
+        - name: OCI_REGISTRY_DATA
+          value: /data
+        # Optional: set OCI_REGISTRY_PASSWORD to require Basic auth
+      volumeMounts:
+        - name: data
+          mountPath: /data
+      resources:
+        limits:
+          memory: 128Mi
+          cpu: "500m"
+  volumes:
+    - name: data
+      emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oci-registry
+spec:
+  selector:
+    app: oci-registry
+  ports:
+    - name: registry
+      port: 5000
+      targetPort: registry

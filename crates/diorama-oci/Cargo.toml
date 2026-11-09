@@ -8,12 +8,12 @@ publish.workspace = true
 [dependencies]
 diorama-cri = { version = "=0.1.0", path = "../diorama-cri" }
 diorama-supervisor = { version = "=0.1.0", path = "../diorama-supervisor" }
-oci-cri = { version = "=0.1.15", git = "https://github.com/geoffsee/oci-lib", rev = "9e2140c330e58d4249321b41ad2b2e98ebbc83e9", default-features = false }
+oci-cri = { version = "=0.1.15", git = "https://github.com/camelidae/oci-lib", rev = "1b1e979ae00e36f61cff05a861290508afbbfa8b", default-features = false }
 tokio = { version = "=1.54.1", features = ["macros", "sync", "time"] }
 
 [dev-dependencies]
 dioramalet = { version = "=0.1.0", path = "../diorama-kubelet" }
-oci-cri = { version = "=0.1.15", git = "https://github.com/geoffsee/oci-lib", rev = "9e2140c330e58d4249321b41ad2b2e98ebbc83e9", default-features = false, features = ["test-support"] }
+oci-cri = { version = "=0.1.15", git = "https://github.com/camelidae/oci-lib", rev = "1b1e979ae00e36f61cff05a861290508afbbfa8b", default-features = false, features = ["test-support"] }
 tempfile = "=3.27.0"
 
 [lints]

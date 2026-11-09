@@ -53,7 +53,7 @@ regex 1.13.1 complete the graph; cargo-deny remains authoritative. See
 [saphyr sources](https://github.com/saphyr-rs/saphyr) and the immutable crate archives
 linked by Cargo.lock. A pinned local scanner compatibility patch restores YAML 1.1
 physical NEL/LS/PS line breaks through the iterator/BufferedInput entry point; see
-[the patch rationale](../../third_party/saphyr-parser/diorama-COMPATIBILITY.md).
+[the patch rationale](../../vendor/saphyr-parser/diorama-COMPATIBILITY.md).
 It adds no dependency or ban exception; original decode/alias limits remain.
 
 Three explicit policy decisions differ from the baseline:

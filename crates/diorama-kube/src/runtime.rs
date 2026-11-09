@@ -53,6 +53,7 @@ use crate::lifecycle_sink::{FlushPolicy, SinkReport, configured_log_level, deliv
 
 pub const COMPONENT_CONTAINERD: &str = diorama_containerd::COMPONENT_CONTAINERD;
 pub const COMPONENT_EXTERNAL_CRI: &str = diorama_cri::COMPONENT_EXTERNAL_CRI;
+pub const COMPONENT_OCI_CRI_VM: &str = "oci-cri-vm";
 pub const COMPONENT_DATASTORE: &str = "datastore";
 pub const COMPONENT_APISERVER: &str = "apiserver";
 pub const COMPONENT_CONTROLLER_MANAGER: &str = "controller-manager";
@@ -838,22 +839,32 @@ pub fn select_runtime_provider(
 ) -> Option<Arc<dyn RuntimeProvider>> {
     let endpoint = config.runtime.endpoint.trim();
     let socket_path = if endpoint.is_empty() {
-        if !cfg!(target_os = "linux") {
-            return None;
-        }
-        let managed = PathBuf::from(&config.path).join(if config.runtime.backend == "oci-cri" {
-            "oci-cri/cri.sock"
-        } else {
-            "containerd/containerd.sock"
-        });
-        if managed.exists() || config.runtime.backend == "oci-cri" {
-            managed
-        } else {
-            let host = PathBuf::from("/run/containerd/containerd.sock");
-            if host.exists() {
-                host
+        if cfg!(target_os = "macos") {
+            let explicit = config.runtime.backend == "oci-cri";
+            let automatic = matches!(config.runtime.backend.as_str(), "" | "auto");
+            if explicit || (automatic && macos_vm_helper_available()) {
+                PathBuf::from(&config.path).join("oci-cri/cri.sock")
             } else {
                 return None;
+            }
+        } else if !cfg!(target_os = "linux") {
+            return None;
+        } else {
+            let managed =
+                PathBuf::from(&config.path).join(if config.runtime.backend == "oci-cri" {
+                    "oci-cri/cri.sock"
+                } else {
+                    "containerd/containerd.sock"
+                });
+            if managed.exists() || config.runtime.backend == "oci-cri" {
+                managed
+            } else {
+                let host = PathBuf::from("/run/containerd/containerd.sock");
+                if host.exists() {
+                    host
+                } else {
+                    return None;
+                }
             }
         }
     } else {
@@ -1301,6 +1312,20 @@ fn is_dir_writable(dir: &Path) -> bool {
     }
 }
 
+#[derive(Clone, Copy)]
+enum HostOs {
+    Linux,
+    Macos,
+    Other,
+}
+
+#[derive(Clone, Copy)]
+struct WorkloadHost {
+    os: HostOs,
+    oci_enabled: bool,
+    vm_helper: bool,
+}
+
 fn detect_workload_runtime(
     config: &diorama_config::Config,
     state_dir: &Path,
@@ -1308,19 +1333,51 @@ fn detect_workload_runtime(
     detect_workload_runtime_for_host(
         config,
         state_dir,
-        cfg!(target_os = "linux"),
-        cfg!(feature = "oci-cri"),
+        WorkloadHost {
+            os: if cfg!(target_os = "linux") {
+                HostOs::Linux
+            } else if cfg!(target_os = "macos") {
+                HostOs::Macos
+            } else {
+                HostOs::Other
+            },
+            oci_enabled: cfg!(feature = "oci-cri"),
+            vm_helper: macos_vm_helper_available(),
+        },
     )
 }
 
+/// Automatic macOS guest selection needs the sibling `dioramactl`. An explicit
+/// `oci-cri` backend still selects the guest so a missing helper fails at startup.
+fn macos_vm_helper_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::vm_runtime::locate_dioramactl().is_ok()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// On macOS, dioramactl hosts oci-cri in its embedded Linux guest, so it is the
+/// automatic choice there and the only managed backend.
 fn detect_workload_runtime_for_host(
     config: &diorama_config::Config,
     state_dir: &Path,
-    linux: bool,
-    oci_enabled: bool,
+    host: WorkloadHost,
 ) -> Result<Option<(&'static str, PathBuf)>, RuntimeError> {
+    let linux = matches!(host.os, HostOs::Linux);
+    let macos = matches!(host.os, HostOs::Macos);
+    let oci_enabled = host.oci_enabled;
+    let vm_helper = host.vm_helper;
     let invalid =
         |message| RuntimeError::from(io::Error::new(io::ErrorKind::InvalidInput, message));
+    if macos && !config.runtime.endpoint.trim().is_empty() {
+        let endpoint = config.runtime.endpoint.trim();
+        let socket = endpoint.strip_prefix("unix://").unwrap_or(endpoint);
+        return Ok(Some((COMPONENT_EXTERNAL_CRI, PathBuf::from(socket))));
+    }
     if matches!(config.runtime.backend.as_str(), "containerd" | "oci-cri")
         && !config.runtime.endpoint.trim().is_empty()
     {
@@ -1328,9 +1385,17 @@ fn detect_workload_runtime_for_host(
             "managed runtime selection conflicts with runtime.endpoint",
         ));
     }
+    let automatic = matches!(config.runtime.backend.as_str(), "" | "auto")
+        && config.runtime.endpoint.trim().is_empty();
+    if macos && (config.runtime.backend == "oci-cri" || (automatic && vm_helper)) {
+        return Ok(Some((
+            COMPONENT_OCI_CRI_VM,
+            state_dir.join("oci-cri/cri.sock"),
+        )));
+    }
     if config.runtime.backend == "oci-cri" {
-        if !linux {
-            return Err(invalid("managed oci-cri requires Linux"));
+        if !linux && !macos {
+            return Err(invalid("managed oci-cri requires Linux or macOS"));
         }
         if !oci_enabled {
             return Err(invalid(
@@ -1371,8 +1436,44 @@ fn register_container_runtime(
 ) -> Result<RuntimeBuilder, RuntimeError> {
     let containerd_paths = ContainerdPaths::from_base(state_dir);
     let etc_cni = Path::new("/etc/cni/net.d");
+    if runtime_id == COMPONENT_OCI_CRI_VM {
+        #[cfg(target_os = "macos")]
+        return Ok(register_vm_runtime(
+            builder,
+            state_dir,
+            socket_path,
+            pod_cidr,
+        ));
+        #[cfg(not(target_os = "macos"))]
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "managed macOS VM runtime requires macOS",
+        )
+        .into());
+    }
     if runtime_id == "oci-cri" {
-        #[cfg(feature = "oci-cri")]
+        // The macOS guest runs sandboxes without CNI; host plugins cannot be used there.
+        #[cfg(all(feature = "oci-cri", target_os = "macos"))]
+        {
+            let _ = (&containerd_paths, mtu);
+            let base = state_dir.join("oci-cri");
+            let host_share = if state_dir.is_absolute() {
+                state_dir.to_path_buf()
+            } else {
+                std::env::current_dir()?.join(state_dir)
+            };
+            let config = diorama_oci::Config {
+                socket: socket_path.to_path_buf(),
+                root: base.join("root"),
+                state_root: base.join("state"),
+                host_shares: vec![host_share],
+                pod_cidr: pod_cidr.unwrap_or_default().to_string(),
+                ..diorama_oci::Config::default()
+            };
+            let timeout = builder.policy.startup_timeout();
+            return Ok(builder.register_oci_cri(diorama_oci::OciCriService::new(config, timeout)));
+        }
+        #[cfg(all(feature = "oci-cri", not(target_os = "macos")))]
         {
             let base = state_dir.join("oci-cri");
             let cni_conf = base.join("cni/net.d");
@@ -1424,24 +1525,58 @@ fn register_container_runtime(
         let containerd_service = ContainerdService::new(containerd_options);
         Ok(builder.register_containerd(containerd_service))
     } else {
+        register_external_runtime(builder, state_dir, socket_path, mtu, pod_cidr)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn register_vm_runtime(
+    builder: RuntimeBuilder,
+    state_dir: &Path,
+    socket_path: &Path,
+    pod_cidr: Option<&str>,
+) -> RuntimeBuilder {
+    let timeout = builder.policy.startup_timeout();
+    let registration = crate::vm_runtime::VmRuntimeService::registration(
+        state_dir.to_path_buf(),
+        socket_path.to_path_buf(),
+        pod_cidr.unwrap_or_default().to_string(),
+        timeout,
+    );
+    builder.register_component(registration)
+}
+
+fn register_external_runtime(
+    builder: RuntimeBuilder,
+    state_dir: &Path,
+    socket_path: &Path,
+    mtu: u32,
+    pod_cidr: Option<&str>,
+) -> Result<RuntimeBuilder, RuntimeError> {
+    #[cfg(target_os = "macos")]
+    let _ = (state_dir, mtu, pod_cidr);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let containerd_paths = ContainerdPaths::from_base(state_dir);
+        let etc_cni = Path::new("/etc/cni/net.d");
         let conf_target = if is_dir_writable(etc_cni) {
             etc_cni
         } else {
             containerd_paths.cni_conf_dir.as_path()
         };
         diorama_network::write_external_cni_config(conf_target, mtu, pod_cidr)?;
-
-        let endpoint_str = format!("unix://{}", socket_path.display());
-        let endpoints = RuntimeEndpoints::parse(&endpoint_str, None).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("invalid CRI endpoint: {e}"),
-            )
-        })?;
-        let cri_options = ExternalRuntimeOptions::new(endpoints);
-        let cri_service = ExternalRuntimeService::new(cri_options);
-        Ok(builder.register_external_cri(cri_service))
     }
+
+    let endpoint_str = format!("unix://{}", socket_path.display());
+    let endpoints = RuntimeEndpoints::parse(&endpoint_str, None).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid CRI endpoint: {e}"),
+        )
+    })?;
+    let cri_options = ExternalRuntimeOptions::new(endpoints);
+    let cri_service = ExternalRuntimeService::new(cri_options);
+    Ok(builder.register_external_cri(cri_service))
 }
 
 fn register_workload_path(
@@ -1655,19 +1790,85 @@ mod node_ip_for_config_tests {
 mod runtime_selection_tests {
     use super::*;
 
+    fn linux_host(oci_enabled: bool) -> WorkloadHost {
+        WorkloadHost {
+            os: HostOs::Linux,
+            oci_enabled,
+            vm_helper: false,
+        }
+    }
+
+    fn macos_host(oci_enabled: bool, vm_helper: bool) -> WorkloadHost {
+        WorkloadHost {
+            os: HostOs::Macos,
+            oci_enabled,
+            vm_helper,
+        }
+    }
+
+    fn other_host(oci_enabled: bool) -> WorkloadHost {
+        WorkloadHost {
+            os: HostOs::Other,
+            oci_enabled,
+            vm_helper: false,
+        }
+    }
+
     #[test]
     fn explicit_oci_selection_checks_platform_feature_and_endpoint() {
         let mut config = diorama_config::Config::default();
         config.runtime.backend = "oci-cri".into();
         let base = Path::new("/test/node");
-        assert!(detect_workload_runtime_for_host(&config, base, false, true).is_err());
-        assert!(detect_workload_runtime_for_host(&config, base, true, false).is_err());
+        assert!(detect_workload_runtime_for_host(&config, base, other_host(true)).is_err());
+        assert!(detect_workload_runtime_for_host(&config, base, linux_host(false)).is_err());
         assert_eq!(
-            detect_workload_runtime_for_host(&config, base, true, true).unwrap(),
+            detect_workload_runtime_for_host(&config, base, linux_host(true)).unwrap(),
             Some(("oci-cri", base.join("oci-cri/cri.sock")))
         );
+        assert_eq!(
+            detect_workload_runtime_for_host(&config, base, macos_host(true, false)).unwrap(),
+            Some((COMPONENT_OCI_CRI_VM, base.join("oci-cri/cri.sock")))
+        );
         config.runtime.endpoint = "/host/cri.sock".into();
-        assert!(detect_workload_runtime_for_host(&config, base, true, true).is_err());
+        assert!(detect_workload_runtime_for_host(&config, base, linux_host(true)).is_err());
+    }
+
+    #[test]
+    fn macos_selects_the_oci_guest_automatically() {
+        let mut config = diorama_config::Config::default();
+        let base = Path::new("/test/node");
+        let oci = Some((COMPONENT_OCI_CRI_VM, base.join("oci-cri/cri.sock")));
+        assert!(
+            detect_workload_runtime_for_host(&config, base, macos_host(true, false))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            detect_workload_runtime_for_host(&config, base, macos_host(true, true)).unwrap(),
+            oci
+        );
+        config.runtime.backend = "auto".into();
+        assert_eq!(
+            detect_workload_runtime_for_host(&config, base, macos_host(true, true)).unwrap(),
+            oci
+        );
+        assert_eq!(
+            detect_workload_runtime_for_host(&config, base, macos_host(false, true)).unwrap(),
+            oci
+        );
+        config.runtime.backend = "oci-cri".into();
+        assert_eq!(
+            detect_workload_runtime_for_host(&config, base, macos_host(true, false)).unwrap(),
+            oci
+        );
+        config.runtime.backend = "containerd".into();
+        assert!(detect_workload_runtime_for_host(&config, base, macos_host(true, true)).is_err());
+        config.runtime.backend = "auto".into();
+        config.runtime.endpoint = "unix:///host/cri.sock".into();
+        assert_eq!(
+            detect_workload_runtime_for_host(&config, base, macos_host(true, true)).unwrap(),
+            Some((COMPONENT_EXTERNAL_CRI, PathBuf::from("/host/cri.sock")))
+        );
     }
 
     #[test]
@@ -1675,23 +1876,23 @@ mod runtime_selection_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut config = diorama_config::Config::default();
         assert!(
-            detect_workload_runtime_for_host(&config, dir.path(), true, true)
+            detect_workload_runtime_for_host(&config, dir.path(), linux_host(true))
                 .unwrap()
                 .is_none()
         );
         config.runtime.backend = "containerd".into();
-        assert!(detect_workload_runtime_for_host(&config, dir.path(), true, true).is_err());
+        assert!(detect_workload_runtime_for_host(&config, dir.path(), linux_host(true)).is_err());
         let paths = ContainerdPaths::from_base(dir.path());
         std::fs::create_dir_all(paths.binary_path.parent().unwrap()).unwrap();
         std::fs::write(&paths.binary_path, []).unwrap();
         assert_eq!(
-            detect_workload_runtime_for_host(&config, dir.path(), true, true).unwrap(),
+            detect_workload_runtime_for_host(&config, dir.path(), linux_host(true)).unwrap(),
             Some((COMPONENT_CONTAINERD, paths.socket_path))
         );
         config.runtime.backend = "auto".into();
         config.runtime.endpoint = "unix:///host/cri.sock".into();
         assert_eq!(
-            detect_workload_runtime_for_host(&config, dir.path(), true, true).unwrap(),
+            detect_workload_runtime_for_host(&config, dir.path(), linux_host(true)).unwrap(),
             Some((COMPONENT_EXTERNAL_CRI, PathBuf::from("/host/cri.sock")))
         );
     }

@@ -79,5 +79,6 @@ back byte-for-byte. These checks require no host discovery or running cluster.
 
 `runtime.backend` is a diorama extension: empty or `auto` preserves automatic
 runtime selection; `containerd` and `oci-cri` explicitly select a managed runtime.
-Managed selections conflict with `runtime.endpoint`. `oci-cri` requires Linux and
-a build with the `oci-cri` feature.
+Managed selections conflict with `runtime.endpoint`. On Linux, `oci-cri` requires a
+build with the `oci-cri` feature; the local macOS release build starts its bundled
+guest through the companion `dioramactl` executable.
