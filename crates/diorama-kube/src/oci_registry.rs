@@ -1,4 +1,5 @@
 //! Bootstrap the embedded wasip3 OCI registry after wasmtime is advertised.
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -148,7 +149,7 @@ async fn pull_archive(
         .pull_image(PullImageRequest {
             image: Some(ImageSpec {
                 image: image.clone(),
-                annotations: Default::default(),
+                annotations: BTreeMap::default(),
                 user_specified_image: OCI_REGISTRY_IMAGE.into(),
                 runtime_handler: "wasmtime".into(),
             }),
