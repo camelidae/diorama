@@ -27,7 +27,13 @@ python3 ../image.py target/wasm32-wasip3/release/oci-registry-wasip3.wasm oci-re
 
 ## Deploy
 
-See `oci-registry.yaml`. Mount a volume at `/data` for persistence.
+Cluster bring-up bootstraps this registry by default when the CRI advertises
+`wasmtime`: the node binary embeds `localhost/diorama-oci-registry:dev`, imports
+it via `oci-archive`, and creates the Pod + Service. No GHCR pull and no manual
+`kubectl apply` are required for a normal start.
+
+`oci-registry.yaml` remains the source-of-truth shape for that bootstrap (and for
+standalone/dev rebuilds). Mount a volume at `/data` for persistence.
 
 On the macOS VM, guest image pulls use the Apple NAT DNS (`192.168.64.1`), not CoreDNS. A pull of `oci-registry:5000/...` succeeds when a Ready sandbox is named `oci-registry` (or is the only Ready sandbox labeled `app` / `app.kubernetes.io/name` = `oci-registry`): oci-cri writes that pod IP into the guest `/etc/hosts`. The pod IP is on the guest CNI bridge, so the pull does not need ClusterIP or kube-proxy. Pushing from the Mac still needs an address the host can route, usually the same pod IP (`http://<pod-ip>:5000`), because the Mac is outside cluster DNS.
 

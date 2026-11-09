@@ -1106,6 +1106,7 @@ dependencies = [
  "diorama-storage",
  "diorama-supervisor",
  "dioramalet",
+ "flate2",
  "http",
  "http-body-util",
  "hyper",

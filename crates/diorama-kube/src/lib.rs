@@ -205,6 +205,7 @@ pub mod config_api;
 pub mod metrics;
 pub use config_api::{COMPONENT_CONFIG_API, ConfigApiAdapter, ConfigApiServer, clear_stale_socket};
 
+mod oci_registry;
 pub mod runtime;
 mod runtime_class;
 pub use runtime::{

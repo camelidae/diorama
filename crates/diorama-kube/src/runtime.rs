@@ -1202,6 +1202,13 @@ fn assemble_worker_runtime(
             vec![runtime_id.to_string()],
             timeout,
         ));
+        builder = builder.register_component(crate::oci_registry::registration(
+            socket_path.clone(),
+            state_dir.to_path_buf(),
+            admin_client.clone(),
+            vec![runtime_id.to_string(), "runtime-classes".to_string()],
+            timeout,
+        ));
         let runtime_provider: Arc<dyn RuntimeProvider> =
             Arc::new(CriRuntimeProvider::new(socket_path));
         let kubelet_service =
@@ -1638,6 +1645,17 @@ fn register_workload_path(
             socket_path.clone(),
             ctx.apiserver_service.admin_client(),
             vec![runtime_id.to_string(), COMPONENT_APISERVER.to_string()],
+            timeout,
+        ));
+        builder = builder.register_component(crate::oci_registry::registration(
+            socket_path.clone(),
+            ctx.state_dir.to_path_buf(),
+            ctx.apiserver_service.admin_client(),
+            vec![
+                runtime_id.to_string(),
+                COMPONENT_APISERVER.to_string(),
+                "runtime-classes".to_string(),
+            ],
             timeout,
         ));
         let runtime_provider: Arc<dyn RuntimeProvider> =
