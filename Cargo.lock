@@ -3060,6 +3060,7 @@ dependencies = [
 [[package]]
 name = "oci-cri"
 version = "0.1.15"
+source = "git+https://github.com/camelidae/oci-lib?rev=e1eb7863fd0f6ddbde5c9b68b54e4cc392a54f19#e1eb7863fd0f6ddbde5c9b68b54e4cc392a54f19"
 dependencies = [
  "base64 0.23.1",
  "cc",
@@ -3105,6 +3106,7 @@ dependencies = [
 [[package]]
 name = "oci-util"
 version = "0.1.15"
+source = "git+https://github.com/camelidae/oci-lib?rev=e1eb7863fd0f6ddbde5c9b68b54e4cc392a54f19#e1eb7863fd0f6ddbde5c9b68b54e4cc392a54f19"
 dependencies = [
  "base64 0.23.1",
  "block2",
