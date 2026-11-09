@@ -116,7 +116,7 @@ impl Adapter for VmRuntimeService {
     }
 }
 
-fn locate_dioramactl() -> io::Result<PathBuf> {
+pub(crate) fn locate_dioramactl() -> io::Result<PathBuf> {
     let current_exe = std::env::current_exe()?;
     locate_dioramactl_from(&current_exe, std::env::var_os("PATH").as_deref())
 }
