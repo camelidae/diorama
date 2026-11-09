@@ -28,3 +28,25 @@ python3 ../image.py target/wasm32-wasip3/release/oci-registry-wasip3.wasm oci-re
 ## Deploy
 
 See `oci-registry.yaml`. Mount a volume at `/data` for persistence.
+
+## Manual host push (before cluster apply)
+
+With a local native registry (or `kubectl port-forward svc/oci-registry 5000:5000`):
+
+```sh
+cargo build -p dioramactl
+cargo build --release --manifest-path container/wasip3/oci-registry/Cargo.toml
+./container/wasip3/oci-registry/target/release/oci-registry-wasip3 \
+  --bind 127.0.0.1:34567 --data /tmp/oci-reg &
+
+./target/debug/dioramactl wasm deploy /tmp/probe.wasm \
+  -o /tmp/diorama-wasm-live \
+  --name probe \
+  --image oci-registry:5000/probe:dev \
+  --registry http://127.0.0.1:34567 \
+  --push-only
+
+curl -fsS http://127.0.0.1:34567/v2/probe/tags/list
+```
+
+Omit `--push-only` once the cluster is up to also `kubectl apply` the generated manifests. Ensure the in-cluster `oci-registry` Service is running so nodes can pull `oci-registry:5000/...`.

@@ -44,3 +44,5 @@ mod short_flags;
 mod thread_regressions;
 #[path = "upgrade_review.rs"]
 mod upgrade_review;
+#[path = "wasm_deploy.rs"]
+mod wasm_deploy;

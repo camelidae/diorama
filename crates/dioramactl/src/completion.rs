@@ -39,7 +39,7 @@ _dioramactl() {
         cword=$COMP_CWORD
     fi
 
-    local commands="check completion config d2k download help install kubeconfig reset uninstall upgrade version"
+    local commands="addon check completion config d2k dash download help install kubeconfig reset token uninstall upgrade version vm wasm"
 
     case "${prev}" in
         dioramactl)
@@ -110,18 +110,23 @@ const ZSH_COMPLETION: &str = r#"#compdef dioramactl
 _dioramactl() {
     local -a commands
     commands=(
+        'addon:Load an offline add-on pack'
         'check:Check host prerequisites'
         'completion:Generate shell completion scripts'
         'config:Manage diorama configuration'
         'd2k:Manage Docker-to-Kubernetes (d2k) API translator'
+        'dash:Install and proxy the realtime node dashboard'
         'download:Download the binary bundle for offline installation'
         'help:Help about any command'
         'install:Install diorama and configure the system service'
         'kubeconfig:Manage kubeconfig context and cluster access'
         'reset:Reset cluster data and restart services'
+        'token:Manage cluster join tokens'
         'uninstall:Uninstall diorama and remove associated system resources'
         'upgrade:Upgrade diorama to a different version'
         'version:Print version information'
+        'vm:Serve or diagnose the macOS Linux VM runtime'
+        'wasm:Package a WASI 0.3 command for cluster deploy'
     )
 
     _arguments -C \
@@ -168,18 +173,31 @@ _dioramactl "$@"
 
 const FISH_COMPLETION: &str = r#"# fish completion for dioramactl
 complete -c dioramactl -f
+complete -c dioramactl -n "__fish_use_subcommand" -a addon -d "Load an offline add-on pack"
 complete -c dioramactl -n "__fish_use_subcommand" -a check -d "Check host prerequisites"
 complete -c dioramactl -n "__fish_use_subcommand" -a completion -d "Generate shell completion scripts"
 complete -c dioramactl -n "__fish_use_subcommand" -a config -d "Manage diorama configuration"
 complete -c dioramactl -n "__fish_use_subcommand" -a d2k -d "Manage Docker-to-Kubernetes (d2k) API translator"
+complete -c dioramactl -n "__fish_use_subcommand" -a dash -d "Install and proxy the realtime node dashboard"
 complete -c dioramactl -n "__fish_use_subcommand" -a download -d "Download the binary bundle for offline installation"
 complete -c dioramactl -n "__fish_use_subcommand" -a help -d "Help about any command"
 complete -c dioramactl -n "__fish_use_subcommand" -a install -d "Install diorama and configure the system service"
 complete -c dioramactl -n "__fish_use_subcommand" -a kubeconfig -d "Manage kubeconfig context and cluster access"
 complete -c dioramactl -n "__fish_use_subcommand" -a reset -d "Reset cluster data and restart services"
+complete -c dioramactl -n "__fish_use_subcommand" -a token -d "Manage cluster join tokens"
 complete -c dioramactl -n "__fish_use_subcommand" -a uninstall -d "Uninstall diorama and remove associated system resources"
 complete -c dioramactl -n "__fish_use_subcommand" -a upgrade -d "Upgrade diorama to a different version"
 complete -c dioramactl -n "__fish_use_subcommand" -a version -d "Print version information"
+complete -c dioramactl -n "__fish_use_subcommand" -a vm -d "Serve or diagnose the macOS Linux VM runtime"
+complete -c dioramactl -n "__fish_use_subcommand" -a wasm -d "Package a WASI 0.3 command for cluster deploy"
+complete -c dioramactl -n "__fish_seen_subcommand_from wasm" -a deploy -d "Package a WASI command"
+complete -c dioramactl -n "__fish_seen_subcommand_from wasm" -l dry-run -d "Write artifacts without pushing or applying"
+complete -c dioramactl -n "__fish_seen_subcommand_from wasm" -l push-only -d "Push image without kubectl apply"
+complete -c dioramactl -n "__fish_seen_subcommand_from wasm" -s o -l output -d "Output directory"
+complete -c dioramactl -n "__fish_seen_subcommand_from wasm" -l name -d "App name"
+complete -c dioramactl -n "__fish_seen_subcommand_from wasm" -l port -d "Service port"
+complete -c dioramactl -n "__fish_seen_subcommand_from wasm" -l image -d "OCI image reference"
+complete -c dioramactl -n "__fish_seen_subcommand_from wasm" -l registry -d "Registry base URL for push"
 
 complete -c dioramactl -n "__fish_seen_subcommand_from completion" -a "bash zsh fish powershell"
 
@@ -198,7 +216,7 @@ complete -c dioramactl -n "__fish_seen_subcommand_from download" -l version -d "
 
 const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -CommandName dioramactl -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    $commands = @('check', 'completion', 'config', 'd2k', 'download', 'help', 'install', 'kubeconfig', 'reset', 'uninstall', 'upgrade', 'version')
+    $commands = @('addon', 'check', 'completion', 'config', 'd2k', 'dash', 'download', 'help', 'install', 'kubeconfig', 'reset', 'token', 'uninstall', 'upgrade', 'version', 'vm', 'wasm')
     $elements = $commandAst.CommandElements
     $candidates = if ($elements.Count -ge 2 -and $elements[1].Value -eq 'completion' -and $cursorPosition -gt $elements[1].Extent.EndOffset) {
         @('bash', 'zsh', 'fish', 'powershell')

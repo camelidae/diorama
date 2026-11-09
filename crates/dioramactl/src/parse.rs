@@ -25,6 +25,7 @@ pub enum HelpTopic {
     Addon,
     Dash,
     Token,
+    Wasm,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -46,6 +47,7 @@ pub enum Command {
     Addon(crate::addon::AddonOptions),
     Dash(crate::dash::DashOptions),
     Token(crate::token::TokenOptions),
+    Wasm(crate::wasm::WasmOptions),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +129,12 @@ pub fn parse_command(
             return Ok(Command::Help(HelpTopic::Token));
         }
         return crate::token::parse(&args[1..]).map(Command::Token);
+    }
+    if args.first().map(String::as_str) == Some("wasm") {
+        if args.len() == 1 || args.iter().any(|a| a == "--help" || a == "-h") {
+            return Ok(Command::Help(HelpTopic::Wasm));
+        }
+        return crate::wasm::parse(&args[1..]).map(Command::Wasm);
     }
     let mut topic = HelpTopic::Root;
     let mut command_index = None;
@@ -556,6 +564,7 @@ pub fn parse_command(
             Some("addon") => Command::Help(HelpTopic::Addon),
             Some("dash") => Command::Help(HelpTopic::Dash),
             Some("token") => Command::Help(HelpTopic::Token),
+            Some("wasm") => Command::Help(HelpTopic::Wasm),
             _ => Command::UnknownHelp,
         });
     }
@@ -564,6 +573,7 @@ pub fn parse_command(
         HelpTopic::Addon => Command::Help(HelpTopic::Addon),
         HelpTopic::Dash => Command::Help(HelpTopic::Dash),
         HelpTopic::Token => Command::Help(HelpTopic::Token),
+        HelpTopic::Wasm => Command::Help(HelpTopic::Wasm),
         HelpTopic::Check => Command::Check(check_opts),
         HelpTopic::Version => Command::Version,
         HelpTopic::Root => Command::Help(HelpTopic::Root),

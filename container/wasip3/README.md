@@ -93,9 +93,16 @@ cargo run --release -- --bind 127.0.0.1:5000 --data /tmp/oci-reg
 # Wasm: cargo build --release --target wasm32-wasip3
 ```
 
-For a disposable external HTTP registry, publish the probe archive and a native BusyBox
-OCI archive using `registry.py --help`. Configure that registry in containerd's
-`registry/HOST:PORT/hosts.toml`, then run:
+For a disposable HTTP registry, run the in-tree server (same binary CI uses in place
+of `registry:2`) and publish fixtures with `registry.py`:
+
+```sh
+cargo run --release --manifest-path container/wasip3/oci-registry/Cargo.toml \
+  -- --bind 127.0.0.1:15000 --data /tmp/oci-reg
+python3 container/wasip3/registry.py probe.tar native.tar http://127.0.0.1:15000
+```
+
+Configure that registry in containerd's `registry/HOST:PORT/hosts.toml`, then run:
 
 ```sh
 python3 container/wasip3/smoke.py HOST:PORT/p3-probe

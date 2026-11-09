@@ -106,7 +106,9 @@ fn start_upload(app: &App, name: &str) -> Response {
     if let Err(err) = app.store.put(&key, b"") {
         return Response::text(500, err.to_string());
     }
-    let location = format!("/v2/{name}/blobs/uploads/{id}");
+    // Trailing `?` lets clients that append `&digest=` (registry.py, some
+    // Distribution clients) form a valid query string without a separate `?`.
+    let location = format!("/v2/{name}/blobs/uploads/{id}?");
     Response::empty(202)
         .with_header("Location", location)
         .with_header("Docker-Upload-UUID", id)
@@ -128,7 +130,7 @@ fn patch_upload(app: &App, path: &str, request: &Request) -> Response {
         return Response::text(500, err.to_string());
     }
     let end = existing.len().saturating_sub(1);
-    let location = format!("/v2/{name}/blobs/uploads/{id}");
+    let location = format!("/v2/{name}/blobs/uploads/{id}?");
     Response::empty(202)
         .with_header("Location", location)
         .with_header("Docker-Upload-UUID", id)

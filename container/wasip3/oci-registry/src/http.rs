@@ -118,13 +118,16 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 
 fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()> {
     let reason = status_reason(response.status);
-    write!(
-        stream,
-        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        response.status,
-        reason,
-        response.body.len()
-    )?;
+    write!(stream, "HTTP/1.1 {} {}\r\nConnection: close\r\n", response.status, reason)?;
+    // HEAD responses set Content-Length to the would-be body size; don't
+    // overwrite that with the empty response body length.
+    let has_content_length = response
+        .headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-length"));
+    if !has_content_length {
+        write!(stream, "Content-Length: {}\r\n", response.body.len())?;
+    }
     for (name, value) in &response.headers {
         write!(stream, "{name}: {value}\r\n")?;
     }
