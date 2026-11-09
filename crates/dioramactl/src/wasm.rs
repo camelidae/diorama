@@ -318,9 +318,7 @@ fn parse_image_ref(image: &str) -> io::Result<ImageRef> {
 }
 
 fn registry_base(explicit: Option<&str>, image: &ImageRef) -> io::Result<String> {
-    let raw = explicit
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("http://{}", image.host));
+    let raw = explicit.map_or_else(|| format!("http://{}", image.host), str::to_string);
     let trimmed = raw.trim_end_matches('/');
     if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
         return Err(io::Error::new(
@@ -357,7 +355,7 @@ fn package(resolved: &Resolved, output: &Path) -> io::Result<Packaged> {
 fn workload_yaml(resolved: &Resolved) -> String {
     match resolved.kind {
         WorkloadKind::Job => format!(
-            r#"apiVersion: batch/v1
+            r"apiVersion: batch/v1
 kind: Job
 metadata:
   name: {name}
@@ -372,12 +370,12 @@ spec:
     spec:
       restartPolicy: Never
 {container}
-"#,
+",
             name = resolved.name,
             container = container_spec(resolved, "      "),
         ),
         WorkloadKind::Pod => format!(
-            r#"apiVersion: v1
+            r"apiVersion: v1
 kind: Pod
 metadata:
   name: {name}
@@ -386,12 +384,12 @@ metadata:
 spec:
   restartPolicy: Never
 {container}
-"#,
+",
             name = resolved.name,
             container = container_spec(resolved, ""),
         ),
         WorkloadKind::Deployment => format!(
-            r#"apiVersion: apps/v1
+            r"apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {name}
@@ -408,7 +406,7 @@ spec:
         app: {name}
     spec:
 {container}
-"#,
+",
             name = resolved.name,
             container = container_spec(resolved, "      "),
         ),
@@ -445,7 +443,7 @@ fn container_spec(resolved: &Resolved, indent: &str) -> String {
 
 fn service_yaml(resolved: &Resolved) -> String {
     format!(
-        r#"apiVersion: v1
+        r"apiVersion: v1
 kind: Service
 metadata:
   name: {name}
@@ -458,7 +456,7 @@ spec:
     - name: http
       port: {port}
       targetPort: http
-"#,
+",
         name = resolved.name,
         port = resolved.port,
     )
@@ -466,7 +464,7 @@ spec:
 
 fn storage_yaml(resolved: &Resolved) -> String {
     format!(
-        r#"apiVersion: v1
+        r"apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {name}-data
@@ -479,7 +477,7 @@ spec:
   resources:
     requests:
       storage: 1Gi
-"#,
+",
         name = resolved.name,
     )
 }
@@ -614,7 +612,7 @@ fn upload_blob(endpoint: &HttpEndpoint, name: &str, digest: &str, data: &[u8]) -
     let location = start
         .header("location")
         .ok_or_else(|| io::Error::other("upload missing Location"))?;
-    let put_path = resolve_upload_path(&endpoint.base_path, location, digest)?;
+    let put_path = resolve_upload_path(&endpoint.base_path, location, digest);
     let put = endpoint.request(
         "PUT",
         &put_path,
@@ -652,13 +650,10 @@ fn put_manifest(
     Ok(())
 }
 
-fn resolve_upload_path(base_path: &str, location: &str, digest: &str) -> io::Result<String> {
+fn resolve_upload_path(base_path: &str, location: &str, digest: &str) -> String {
     let path = if let Some(rest) = location.strip_prefix("http://") {
-        let path = rest
-            .split_once('/')
-            .map(|(_, path)| format!("/{path}"))
-            .unwrap_or_else(|| "/".into());
-        path
+        rest.split_once('/')
+            .map_or_else(|| "/".into(), |(_, path)| format!("/{path}"))
     } else if location.starts_with('/') {
         location.to_string()
     } else {
@@ -669,7 +664,7 @@ fn resolve_upload_path(base_path: &str, location: &str, digest: &str) -> io::Res
         )
     };
     let sep = if path.contains('?') { '&' } else { '?' };
-    Ok(format!("{path}{sep}digest={digest}"))
+    format!("{path}{sep}digest={digest}")
 }
 
 fn kubectl_apply(paths: &[PathBuf]) -> io::Result<()> {
@@ -681,10 +676,10 @@ fn kubectl_apply(paths: &[PathBuf]) -> io::Result<()> {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let detail = if !stderr.trim().is_empty() {
-                stderr.trim().to_string()
-            } else {
+            let detail = if stderr.trim().is_empty() {
                 stdout.trim().to_string()
+            } else {
+                stderr.trim().to_string()
             };
             return Err(io::Error::other(format!("{}: {detail}", path.display())));
         }
