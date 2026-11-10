@@ -109,10 +109,10 @@ fn start_upload(app: &App, name: &str) -> Response {
     // Trailing `?` lets clients that append `&digest=` (registry.py, some
     // Distribution clients) form a valid query string without a separate `?`.
     let location = format!("/v2/{name}/blobs/uploads/{id}?");
+    // Omit Range while no bytes have been received; `0-0` would claim one byte.
     Response::empty(202)
         .with_header("Location", location)
         .with_header("Docker-Upload-UUID", id)
-        .with_header("Range", "0-0")
 }
 
 fn patch_upload(app: &App, path: &str, request: &Request) -> Response {
@@ -129,12 +129,15 @@ fn patch_upload(app: &App, path: &str, request: &Request) -> Response {
     if let Err(err) = app.store.put(&key, &existing) {
         return Response::text(500, err.to_string());
     }
-    let end = existing.len().saturating_sub(1);
     let location = format!("/v2/{name}/blobs/uploads/{id}?");
-    Response::empty(202)
+    let mut response = Response::empty(202)
         .with_header("Location", location)
-        .with_header("Docker-Upload-UUID", id)
-        .with_header("Range", format!("0-{end}"))
+        .with_header("Docker-Upload-UUID", id);
+    if !existing.is_empty() {
+        let end = existing.len() - 1;
+        response = response.with_header("Range", format!("0-{end}"));
+    }
+    response
 }
 
 fn complete_upload(app: &App, path: &str, query: &str, request: &Request) -> Response {

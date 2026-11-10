@@ -88,21 +88,36 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
         headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
     }
 
-    let content_length = headers
+    let transfer_encoding = headers
         .iter()
-        .find(|(k, _)| k == "content-length")
-        .and_then(|(_, v)| v.parse::<usize>().ok())
-        .unwrap_or(0);
-
-    let mut body = rest.to_vec();
-    while body.len() < content_length {
-        let n = stream.read(&mut chunk)?;
-        if n == 0 {
-            break;
+        .find(|(k, _)| k == "transfer-encoding")
+        .map(|(_, v)| v.as_str());
+    let body = if transfer_encoding.is_some_and(|v| {
+        v.split(',')
+            .map(str::trim)
+            .any(|part| part.eq_ignore_ascii_case("chunked"))
+    }) {
+        // Docker's registry client PATCHes blob uploads with chunked bodies and
+        // often omits Content-Length. Read the full chunked payload before
+        // responding, or the client sees a short write / broken MIME headers.
+        read_chunked_body(stream, rest)?
+    } else {
+        let content_length = headers
+            .iter()
+            .find(|(k, _)| k == "content-length")
+            .and_then(|(_, v)| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body = rest.to_vec();
+        while body.len() < content_length {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..n]);
         }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    body.truncate(content_length);
+        body.truncate(content_length);
+        body
+    };
 
     Ok(Request {
         method,
@@ -110,6 +125,84 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
         headers,
         body,
     })
+}
+
+fn read_chunked_body(stream: &mut TcpStream, initial: &[u8]) -> io::Result<Vec<u8>> {
+    let mut pending = initial.to_vec();
+    let mut body = Vec::new();
+    let mut scratch = [0u8; 8192];
+    loop {
+        let size_end = loop {
+            if let Some(pos) = pending.windows(2).position(|w| w == b"\r\n") {
+                break pos;
+            }
+            let n = stream.read(&mut scratch)?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "truncated chunk size",
+                ));
+            }
+            pending.extend_from_slice(&scratch[..n]);
+            if pending.len() > 64 * 1024 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "chunk size line too large",
+                ));
+            }
+        };
+        let size_line = std::str::from_utf8(&pending[..size_end])
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let size_hex = size_line
+            .split(';')
+            .next()
+            .unwrap_or(size_line)
+            .trim();
+        let chunk_size = usize::from_str_radix(size_hex, 16).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid chunk size {size_hex:?}: {e}"),
+            )
+        })?;
+        pending.drain(..size_end + 2);
+        if chunk_size == 0 {
+            // Consume the final CRLF (and any trailers up to a blank line).
+            loop {
+                if let Some(pos) = pending.windows(2).position(|w| w == b"\r\n") {
+                    pending.drain(..pos + 2);
+                    if pos == 0 {
+                        break;
+                    }
+                    continue;
+                }
+                let n = stream.read(&mut scratch)?;
+                if n == 0 {
+                    break;
+                }
+                pending.extend_from_slice(&scratch[..n]);
+            }
+            break;
+        }
+        while pending.len() < chunk_size + 2 {
+            let n = stream.read(&mut scratch)?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "truncated chunk data",
+                ));
+            }
+            pending.extend_from_slice(&scratch[..n]);
+        }
+        body.extend_from_slice(&pending[..chunk_size]);
+        if pending[chunk_size..chunk_size + 2] != *b"\r\n" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "chunk data missing CRLF",
+            ));
+        }
+        pending.drain(..chunk_size + 2);
+    }
+    Ok(body)
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
@@ -149,5 +242,44 @@ fn status_reason(status: u16) -> &'static str {
         416 => "Range Not Satisfiable",
         500 => "Internal Server Error",
         _ => "Unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn read_chunked_body_assembles_multiple_chunks() {
+        let encoded = b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(encoded).unwrap();
+        });
+        thread::sleep(Duration::from_millis(20));
+        let mut client = TcpStream::connect(addr).unwrap();
+        let body = read_chunked_body(&mut client, &[]).unwrap();
+        assert_eq!(body, b"Wikipedia");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn read_chunked_body_uses_prefetch_before_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(b"pedia\r\n0\r\n\r\n").unwrap();
+        });
+        thread::sleep(Duration::from_millis(20));
+        let mut client = TcpStream::connect(addr).unwrap();
+        let body = read_chunked_body(&mut client, b"4\r\nWiki\r\n5\r\n").unwrap();
+        assert_eq!(body, b"Wikipedia");
+        server.join().unwrap();
     }
 }
