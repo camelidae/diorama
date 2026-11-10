@@ -94,7 +94,20 @@ kubectl --kubeconfig=kubeconfig.yaml get nodes
 ```
 
 `make kubeconfig` writes `kubeconfig.yaml` and sets the API endpoint to
-`https://127.0.0.1:6443`. To stop and remove the container:
+`https://127.0.0.1:6443`.
+
+When the CRI advertises `wasmtime`, cluster start embeds and applies the
+in-cluster OCI registry automatically. Confirm it after the node is Ready:
+
+```sh
+kubectl --kubeconfig=kubeconfig.yaml get pod,svc -n default oci-registry
+```
+
+`dioramactl wasm deploy` pushes WASI components to that registry as
+`oci-registry:5000/...`. Rebuild and apply steps for standalone registry work
+live under [container/wasip3/oci-registry](../container/wasip3/oci-registry/README.md).
+
+To stop and remove the container:
 
 ```sh
 make container-stop
