@@ -85,6 +85,11 @@ has not been created yet or the API is unavailable, inspect `docker logs diorama
 and retry after startup completes. `get nodes` confirms API access and shows node
 status; a running container alone does not establish node readiness.
 
+When the node's CRI advertises `wasmtime`, startup also creates the in-cluster
+`oci-registry` Pod and Service used for WASI image pushes. Verify with
+`kubectl --kubeconfig ./kubeconfig.yaml get pod,svc -n default oci-registry`.
+See [Architecture](architecture.md#workload-execution) for the bootstrap path.
+
 ## Extract a host bundle
 
 Download the matching `dioramactl` binary and

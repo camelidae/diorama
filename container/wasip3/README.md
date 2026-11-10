@@ -84,8 +84,11 @@ the native platform; WASI images are never relabeled as Linux.
 ## Wasm OCI registry
 
 `container/wasip3/oci-registry` is an OCI Distribution `/v2/` server as a
-`wasi:cli/run` component (TCP + filesystem; no WIT, no custom host). Deploy with
-`runtimeClassName: wasmtime`. See `oci-registry/README.md`.
+`wasi:cli/run` component (TCP + filesystem; no WIT, no custom host). When the CRI
+advertises `wasmtime`, cluster start embeds and bootstraps
+`localhost/diorama-oci-registry:dev` as Pod + Service automatically. Manual
+`kubectl apply -f oci-registry/oci-registry.yaml` is only for standalone/dev
+rebuilds. See `oci-registry/README.md`.
 
 The macOS guest pulls `oci-registry:5000/...` by mapping that name to the registry pod IP (NAT DNS does not see Service names). `dioramactl vm` enables insecure HTTP for `oci-registry` and private prefixes. `wasm deploy` defaults to a Job so an exiting command is Succeeded; use `--kind deployment` for a long-running server.
 
