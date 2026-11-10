@@ -126,7 +126,7 @@ make -C npm publish-dry-run
 make -C npm publish
 ```
 
-Tagged GitHub releases automatically assemble, verify, and publish all four packages with npm OIDC provenance (`npm publish --provenance`) via [`.github/workflows/release.yml`](https://github.com/geoffsee/diorama/blob/main/.github/workflows/release.yml).
+Tagged GitHub releases automatically assemble, verify, and publish all four packages with npm OIDC provenance (`npm publish --provenance`) via [`.github/workflows/release.yml`](https://github.com/camelidae/diorama/blob/main/.github/workflows/release.yml).
 
 ## License
 

@@ -5,12 +5,12 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/geoffsee/diorama.git",
+    "url": "git+https://github.com/camelidae/diorama.git",
     "directory": "npm/packages/amd64"
   },
-  "homepage": "https://github.com/geoffsee/diorama#readme",
+  "homepage": "https://github.com/camelidae/diorama#readme",
   "bugs": {
-    "url": "https://github.com/geoffsee/diorama/issues"
+    "url": "https://github.com/camelidae/diorama/issues"
   },
   "keywords": [
     "diorama",
