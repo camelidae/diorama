@@ -37,14 +37,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         match arg.as_str() {
             "--bind" => {
                 bind = args.next().ok_or("--bind needs a value")?;
-            }
+            },
             "--data" => {
                 data = PathBuf::from(args.next().ok_or("--data needs a value")?);
-            }
+            },
             "-h" | "--help" => {
                 print_help();
                 return Ok(());
-            }
+            },
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }

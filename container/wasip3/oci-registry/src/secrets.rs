@@ -33,7 +33,10 @@ impl Secrets {
         let Ok(pair) = String::from_utf8(decoded) else {
             return Err(AuthError::Invalid);
         };
-        let password = pair.split_once(':').map(|(_, p)| p).unwrap_or(pair.as_str());
+        let password = pair
+            .split_once(':')
+            .map(|(_, p)| p)
+            .unwrap_or(pair.as_str());
         if password == expected {
             Ok(())
         } else {
@@ -110,9 +113,7 @@ mod tests {
         let secrets = Secrets {
             password: Some("sekret".into()),
         };
-        assert!(secrets
-            .authorize_basic(Some("Basic eDpzZWtyZXQ="))
-            .is_ok());
+        assert!(secrets.authorize_basic(Some("Basic eDpzZWtyZXQ=")).is_ok());
     }
 
     #[test]
@@ -120,8 +121,6 @@ mod tests {
         let secrets = Secrets {
             password: Some("sekret".into()),
         };
-        assert!(secrets
-            .authorize_basic(Some("Basic eDp3cm9uZw=="))
-            .is_err());
+        assert!(secrets.authorize_basic(Some("Basic eDp3cm9uZw==")).is_err());
     }
 }

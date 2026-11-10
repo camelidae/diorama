@@ -48,14 +48,20 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
     let header_end = loop {
         let n = stream.read(&mut chunk)?;
         if n == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "empty request"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "empty request",
+            ));
         }
         buf.extend_from_slice(&chunk[..n]);
         if let Some(pos) = find_header_end(&buf) {
             break pos;
         }
         if buf.len() > 64 * 1024 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "headers too large"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "headers too large",
+            ));
         }
     };
 
@@ -153,11 +159,7 @@ fn read_chunked_body(stream: &mut TcpStream, initial: &[u8]) -> io::Result<Vec<u
         };
         let size_line = std::str::from_utf8(&pending[..size_end])
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let size_hex = size_line
-            .split(';')
-            .next()
-            .unwrap_or(size_line)
-            .trim();
+        let size_hex = size_line.split(';').next().unwrap_or(size_line).trim();
         let chunk_size = usize::from_str_radix(size_hex, 16).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -211,7 +213,11 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 
 fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()> {
     let reason = status_reason(response.status);
-    write!(stream, "HTTP/1.1 {} {}\r\nConnection: close\r\n", response.status, reason)?;
+    write!(
+        stream,
+        "HTTP/1.1 {} {}\r\nConnection: close\r\n",
+        response.status, reason
+    )?;
     // HEAD responses set Content-Length to the would-be body size; don't
     // overwrite that with the empty response body length.
     let has_content_length = response
