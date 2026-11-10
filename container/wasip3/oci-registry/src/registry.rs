@@ -57,10 +57,8 @@ pub fn handle(app: &App, request: Request) -> Response {
         .secrets
         .authorize_basic(header(&request, "authorization"))
     {
-        let mut res = Response::empty(401).with_header(
-            "WWW-Authenticate",
-            "Basic realm=\"oci-registry-wasip3\"",
-        );
+        let mut res = Response::empty(401)
+            .with_header("WWW-Authenticate", "Basic realm=\"oci-registry-wasip3\"");
         res.body = match err {
             AuthError::Missing => b"unauthorized".to_vec(),
             AuthError::Invalid | AuthError::Denied => b"denied".to_vec(),
@@ -70,31 +68,30 @@ pub fn handle(app: &App, request: Request) -> Response {
 
     let (path, query) = split_target(&request.target);
     match (request.method.as_str(), path.as_str()) {
-        ("GET", "/v2" | "/v2/") => Response::empty(200)
-            .with_header("Docker-Distribution-API-Version", "registry/2.0"),
+        ("GET", "/v2" | "/v2/") => {
+            Response::empty(200).with_header("Docker-Distribution-API-Version", "registry/2.0")
+        },
 
         ("POST", p) if let Some(name) = strip_suffix(p, "/blobs/uploads/") => {
             start_upload(app, name)
-        }
-        ("PUT", p) if p.contains("/blobs/uploads/") => {
-            complete_upload(app, p, &query, &request)
-        }
+        },
+        ("PUT", p) if p.contains("/blobs/uploads/") => complete_upload(app, p, &query, &request),
         ("PATCH", p) if p.contains("/blobs/uploads/") => patch_upload(app, p, &request),
         ("HEAD", p) if let Some((name, digest)) = split_blob(p) => head_blob(app, name, digest),
         ("GET", p) if let Some((name, digest)) = split_blob(p) => get_blob(app, name, digest),
         ("PUT", p) if let Some((name, reference)) = split_manifest(p) => {
             put_manifest(app, name, reference, &request)
-        }
+        },
         ("HEAD", p) if let Some((name, reference)) = split_manifest(p) => {
             head_manifest(app, name, reference)
-        }
+        },
         ("GET", p) if let Some((name, reference)) = split_manifest(p) => {
             get_manifest(app, name, reference)
-        }
+        },
         ("GET", p) if let Some(name) = strip_suffix(p, "/tags/list") => list_tags(app, name),
         ("DELETE", p) if let Some((name, reference)) = split_manifest(p) => {
             delete_manifest(app, name, reference)
-        }
+        },
         _ => Response::text(404, "not found"),
     }
 }
@@ -109,10 +106,10 @@ fn start_upload(app: &App, name: &str) -> Response {
     // Trailing `?` lets clients that append `&digest=` (registry.py, some
     // Distribution clients) form a valid query string without a separate `?`.
     let location = format!("/v2/{name}/blobs/uploads/{id}?");
+    // Omit Range while no bytes have been received; `0-0` would claim one byte.
     Response::empty(202)
         .with_header("Location", location)
         .with_header("Docker-Upload-UUID", id)
-        .with_header("Range", "0-0")
 }
 
 fn patch_upload(app: &App, path: &str, request: &Request) -> Response {
@@ -129,12 +126,15 @@ fn patch_upload(app: &App, path: &str, request: &Request) -> Response {
     if let Err(err) = app.store.put(&key, &existing) {
         return Response::text(500, err.to_string());
     }
-    let end = existing.len().saturating_sub(1);
     let location = format!("/v2/{name}/blobs/uploads/{id}?");
-    Response::empty(202)
+    let mut response = Response::empty(202)
         .with_header("Location", location)
-        .with_header("Docker-Upload-UUID", id)
-        .with_header("Range", format!("0-{end}"))
+        .with_header("Docker-Upload-UUID", id);
+    if !existing.is_empty() {
+        let end = existing.len() - 1;
+        response = response.with_header("Range", format!("0-{end}"));
+    }
+    response
 }
 
 fn complete_upload(app: &App, path: &str, query: &str, request: &Request) -> Response {
@@ -195,8 +195,8 @@ fn get_blob(app: &App, name: &str, digest: &str) -> Response {
 
 fn put_manifest(app: &App, name: &str, reference: &str, request: &Request) -> Response {
     let digest = format!("sha256:{}", sha256_hex(&request.body));
-    let media = header(request, "content-type")
-        .unwrap_or("application/vnd.oci.image.manifest.v1+json");
+    let media =
+        header(request, "content-type").unwrap_or("application/vnd.oci.image.manifest.v1+json");
     let manifest_key = blob_key(name, &digest);
     if let Err(err) = app.store.put(&manifest_key, &request.body) {
         return Response::text(500, err.to_string());
@@ -268,8 +268,9 @@ fn head_manifest(app: &App, name: &str, reference: &str) -> Response {
 
 fn get_manifest(app: &App, name: &str, reference: &str) -> Response {
     match resolve_manifest(app, name, reference) {
-        Ok(Some((digest, body, media))) => Response::bytes(200, &media, body)
-            .with_header("Docker-Content-Digest", digest),
+        Ok(Some((digest, body, media))) => {
+            Response::bytes(200, &media, body).with_header("Docker-Content-Digest", digest)
+        },
         Ok(None) => Response::text(404, "manifest unknown"),
         Err(err) => Response::text(500, err),
     }
@@ -396,7 +397,11 @@ fn normalize_name(name: &str) -> String {
 }
 
 fn blob_key(name: &str, digest: &str) -> String {
-    format!("{}/blobs/{}", normalize_name(name), digest.replace(':', "_"))
+    format!(
+        "{}/blobs/{}",
+        normalize_name(name),
+        digest.replace(':', "_")
+    )
 }
 
 fn valid_digest(digest: &str) -> bool {

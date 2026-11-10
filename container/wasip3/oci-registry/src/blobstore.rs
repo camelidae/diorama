@@ -62,13 +62,7 @@ impl Blobstore {
         Ok(out)
     }
 
-    fn walk(
-        &self,
-        dir: &Path,
-        rel: &str,
-        prefix: &str,
-        out: &mut Vec<String>,
-    ) -> io::Result<()> {
+    fn walk(&self, dir: &Path, rel: &str, prefix: &str, out: &mut Vec<String>) -> io::Result<()> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
