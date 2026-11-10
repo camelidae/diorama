@@ -26,7 +26,7 @@ All executables are compressed with UPX (`--best --lzma`):
 import { binDir, dioramaPath, dioramactlPath, ociCriPath } from "@diorama/aarch64";
 ```
 
-See [`@diorama/cli`](https://www.npmjs.com/package/@diorama/cli) and the [GitHub repository](https://github.com/geoffsee/diorama) for full CLI documentation.
+See [`@diorama/cli`](https://www.npmjs.com/package/@diorama/cli) and the [GitHub repository](https://github.com/camelidae/diorama) for full CLI documentation.
 
 ## License
 
