@@ -94,7 +94,7 @@ fn host_archive_path(state_dir: &Path) -> PathBuf {
 }
 
 /// Path the CRI engine can open for `oci-archive:`.
-fn pull_image_ref(state_dir: &Path, host_archive: &Path) -> io::Result<String> {
+fn pull_image_ref(state_dir: &Path, host_archive: &Path) -> String {
     #[cfg(target_os = "macos")]
     {
         // Host root is virtiofs at /mnt/.host-root; an ext overlay covers /mnt/root.
@@ -103,17 +103,20 @@ fn pull_image_ref(state_dir: &Path, host_archive: &Path) -> io::Result<String> {
         let abs = if state_dir.is_absolute() {
             state_dir.to_path_buf()
         } else {
-            std::env::current_dir()?.join(state_dir)
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(state_dir),
+                Err(_) => state_dir.to_path_buf(),
+            }
         };
-        Ok(format!(
+        format!(
             "oci-archive:{}/oci-cri/root/images/{ARCHIVE_FILE}",
             abs.display()
-        ))
+        )
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = state_dir;
-        Ok(format!("oci-archive:{}", host_archive.display()))
+        format!("oci-archive:{}", host_archive.display())
     }
 }
 
@@ -142,9 +145,7 @@ async fn pull_archive(
     host_archive: &Path,
     state_dir: &Path,
 ) -> Result<(), AdapterError> {
-    let image = pull_image_ref(state_dir, host_archive).map_err(|_| AdapterError {
-        code: "oci-registry-path",
-    })?;
+    let image = pull_image_ref(state_dir, host_archive);
     ImageServiceClient::new(channel)
         .pull_image(PullImageRequest {
             image: Some(ImageSpec {
